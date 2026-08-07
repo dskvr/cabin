@@ -10,6 +10,7 @@ import {
   verifyEvent,
 } from "../dist/assets/nostr/crypto.js";
 import {
+  decodeLnurl,
   decodeNaddr,
   decodeNpub,
   decodeNsec,
@@ -44,6 +45,7 @@ import {
   collectZapReceipts,
   parseBolt11AmountMsat,
   parseZapReceipt,
+  requestZapInvoice,
   zapTotals,
 } from "../dist/assets/nostr/zaps.js";
 import { getTag } from "../dist/assets/domain/utils.js";
@@ -335,6 +337,8 @@ test("presenter zap request targets the real pubkey and ephemeral entry coordina
   assert.equal(getTag(request, "p"), realPubkey);
   assert.equal(getTag(request, "a"), `${APP_KIND}:${participantPubkey}:sedd-entry:${sessionD}`);
   assert.equal(getTag(request, "k"), String(APP_KIND));
+  assert.match(getTag(request, "lnurl"), /^lnurl1/);
+  assert.equal(decodeLnurl(getTag(request, "lnurl")), "https://example.com/lnurl");
   assert.equal(request.kind, 9734);
   assert.equal(await verifyEvent(request), true);
 });
@@ -408,6 +412,48 @@ test("zap receipt validation verifies both signatures, target, and amount", asyn
     servicePubkey: getPublicKey(key(18)),
   });
   assert.equal(wrongService, null, "a receipt must be authored by the advertised LNURL service key when known");
+});
+
+test("zap invoice callback receives required LNURL parameter", async () => {
+  const request = await finalizeEvent({
+    kind: 9734,
+    created_at: 1,
+    tags: [
+      ["p", getPublicKey(key(18))],
+      ["amount", "21000"],
+      ["lnurl", "lnurl1testvalue"],
+      ["relays", ...DEFAULT_RELAYS],
+    ],
+    content: "",
+  }, key(19));
+  let callbackUrl;
+  const invoice = await requestZapInvoice({
+    metadata: {
+      callback: "https://example.com/callback",
+      minSendable: 1_000,
+      maxSendable: 1_000_000,
+      metadata: "[]",
+      commentAllowed: 0,
+      allowsNostr: true,
+      nostrPubkey: getPublicKey(key(20)),
+      raw: {},
+    },
+    amountMsat: 21_000,
+    zapRequest: request,
+    comment: "",
+    fetchImpl: async (input) => {
+      callbackUrl = new URL(String(input));
+      return new Response(JSON.stringify({ pr: "lnbc210n1invoicevalueover20chars" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.equal(callbackUrl.searchParams.get("amount"), "21000");
+  assert.equal(callbackUrl.searchParams.get("lnurl"), "lnurl1testvalue");
+  assert.equal(JSON.parse(callbackUrl.searchParams.get("nostr")).id, request.id);
+  assert.equal(invoice.invoice, "lnbc210n1invoicevalueover20chars");
 });
 
 test("BOLT11 amount parser handles standard multipliers", () => {

@@ -197,3 +197,11 @@ export function decodeLnurl(value: string): string {
   if (decoded.prefix !== "lnurl") throw new Error("Expected an LNURL");
   return new TextDecoder().decode(decoded.bytes);
 }
+
+export function encodeLnurl(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && url.hostname === "localhost")) {
+    throw new Error("LNURL must use HTTPS");
+  }
+  return bech32Encode("lnurl", new TextEncoder().encode(url.href));
+}

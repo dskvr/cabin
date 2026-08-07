@@ -6,6 +6,7 @@ import type {
   ProfileMetadata,
 } from "../domain/types.js";
 import { cloneTags, entryD } from "../domain/utils.js";
+import { encodeLnurl } from "./bech32.js";
 import { finalizeEvent } from "./crypto.js";
 
 export async function buildSessionEvent({
@@ -118,7 +119,7 @@ export async function createPresenterZapRequest({
       tags: [
         ["relays", ...DEFAULT_RELAYS],
         ["amount", String(amountMsat)],
-        ["lnurl", lnurl],
+        ["lnurl", encodeLnurl(lnurl)],
         ["p", presenterRealPubkey],
         ["a", address],
         ["k", String(APP_KIND)],

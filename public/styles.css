@@ -681,6 +681,20 @@ code,
   outline: 0;
 }
 
+.invoice-qr {
+  width: min(280px, 80vw);
+  margin: 18px auto;
+  padding: 10px;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.invoice-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .field input,
 .field select {
   min-height: 46px;

@@ -64,6 +64,24 @@ import {
 import { button, captainCard, escapeAttr, escapeHtml, field, identiconDataUri, profileComponent, textarea } from "../ui/html.js";
 import { navigate, parseRoute, sessionNaddr, type AppRoute } from "./router.js";
 
+declare const qrcode: (typeNumber: number, errorCorrectionLevel: "M") => {
+  addData(data: string, mode: "Alphanumeric"): void;
+  make(): void;
+  createSvgTag(options: { scalable: boolean; margin: number }): string;
+};
+
+function lightningQr(invoice: string): string {
+  if (!invoice) return "";
+  try {
+    const qr = qrcode(0, "M");
+    qr.addData(`LIGHTNING:${invoice.toUpperCase()}`, "Alphanumeric");
+    qr.make();
+    return `<div class="invoice-qr" aria-label="Lightning invoice QR code">${qr.createSvgTag({ scalable: true, margin: 4 })}</div>`;
+  } catch {
+    return "";
+  }
+}
+
 interface Notice {
   kind: "success" | "error" | "info";
   text: string;
@@ -98,8 +116,9 @@ interface ZapModalState {
   entryAuthor: string;
   amountSats: string;
   comment: string;
-  status: "form" | "loading" | "invoice" | "paid" | "error";
+  status: "form" | "loading" | "invoice" | "paid" | "received" | "error";
   invoice: string | null;
+  zapRequestId: string | null;
   error: string | null;
   metadata: LnurlPayMetadata | null;
 }
@@ -597,7 +616,7 @@ export class DemoDayApp {
           ${isLive ? `<div class="project-stats"><span>⚡ ${projectReceipts.length} zaps</span><span>${sats.toLocaleString()} sats</span></div>` : ""}
           <div class="project-links">${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}${isLive && canZap && entry.author !== ownEntry.author ? button("⚡ Zap", "open-zap", { className: "button button-zap button-small", attrs: `data-entry-author="${escapeAttr(entry.author)}"` }) : ""}</div>
           ${entry.author === ownEntry.author ? this.#renderOwnDemoEditor(ownEntry) : ""}
-          ${run ? `<details class="project-details" ${editingFeedback ? "open" : ""}><summary>View project details</summary><div class="project-feedback"><span>${feedback.length} feedback</span>${entry.author !== ownEntry.author && (!hasOwnFeedback || editingFeedback) ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}" data-saved-note="${escapeAttr(ownFeedback.liked)}" data-note-saved="${hasSavedFeedback}"><h4>${editingFeedback ? "Edit your feedback" : "Your feedback"}</h4>${textarea({ label: "What did you like?", name: "liked", value: ownFeedbackDraft, maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit" data-unsaved-label="${editingFeedback ? "Save changes" : "Save feedback"}" ${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "disabled" : ""}>${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "✓ Saved" : editingFeedback ? "Save changes" : "Save feedback"}</button></form>` : ""}${feedback.length ? `<div class="feedback-results"><h4>What people liked</h4>${feedback.map((item) => { const reviewer = this.#profile(item.reviewer.author); const edit = item.reviewer.author === ownEntry.author ? button("Edit", "edit-feedback", { className: "button button-quiet button-small", attrs: `data-demo-author="${escapeAttr(entry.author)}"` }) : ""; return feedbackQuote(item.response.liked, item.reviewer.author, reviewer.name, reviewer.picture, edit); }).join("")}</div>` : ""}</div></details>` : ""}
+          ${run ? `<details class="project-details" ${editingFeedback ? "open" : ""}><summary>View project details</summary><div class="project-feedback"><span>${feedback.length} feedback · ${projectReceipts.length} zaps</span>${entry.author !== ownEntry.author && (!hasOwnFeedback || editingFeedback) ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}" data-saved-note="${escapeAttr(ownFeedback.liked)}" data-note-saved="${hasSavedFeedback}"><h4>${editingFeedback ? "Edit your feedback" : "Your feedback"}</h4>${textarea({ label: "What did you like?", name: "liked", value: ownFeedbackDraft, maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit" data-unsaved-label="${editingFeedback ? "Save changes" : "Save feedback"}" ${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "disabled" : ""}>${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "✓ Saved" : editingFeedback ? "Save changes" : "Save feedback"}</button></form>` : ""}<div class="feedback-columns"><div>${feedback.length ? `<div class="feedback-results"><h4>What people liked</h4>${feedback.map((item) => { const reviewer = this.#profile(item.reviewer.author); const edit = item.reviewer.author === ownEntry.author ? button("Edit", "edit-feedback", { className: "button button-quiet button-small", attrs: `data-demo-author="${escapeAttr(entry.author)}"` }) : ""; return feedbackQuote(item.response.liked, item.reviewer.author, reviewer.name, reviewer.picture, edit); }).join("")}</div>` : `<h4>What people liked</h4><p>No responses.</p>`}</div><div class="zap-comments"><h4>Zaps</h4>${projectReceipts.map((receipt) => `<p><strong>⚡ ${(receipt.amountSats ?? 0).toLocaleString()} sats</strong>${receipt.comment ? ` · ${escapeHtml(receipt.comment)}` : ""}</p>`).join("") || `<p>No zaps.</p>`}</div></div></div></details>` : ""}
         </article>`;
       }).join("")}</div>
     </section>`;
@@ -687,8 +706,7 @@ export class DemoDayApp {
         return `<article class="summary-project">
           <div class="summary-project-title"><span class="position-number">${index + 1}</span><div>${profileComponent({ picture: profileImage(metadata), pubkey: entry.author, name, size: "lg" })}<h3>${escapeHtml(entry.content.demo.name)}</h3><p>${escapeHtml(entry.content.demo.description)}</p>${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}</div></div>
           <div class="project-detail-grid">${profileNamed ? "" : `<div class="account-detail"><span>Account</span><code>${escapeHtml(realNpub)}</code></div>`}<div><span>Final Elo</span><strong>${elo?.rating.toFixed(6) ?? "—"}</strong></div><div><span>Presentation</span><strong>${formatClockSeconds(Math.floor(timing.presentation_ms / 1000))}</strong></div><div><span>Questions</span><strong>${formatClockSeconds(Math.floor(timing.questions_ms / 1000))}</strong></div><div><span>Overtime</span><strong>${formatClockSeconds(Math.floor(timing.overtime_ms / 1000), "+")}</strong></div><div><span>Zaps</span><strong>${receipts.length} · ${receipts.reduce((sum, item) => sum + (item.amountSats ?? 0), 0).toLocaleString()} sats</strong></div></div>
-          <div class="feedback-columns"><div><h4>What people liked</h4>${feedback.map((item) => { const reviewerMetadata = parseProfileMetadata(snapshot.profiles.get(item.reviewer.author) ?? null); return feedbackQuote(item.response.liked, item.reviewer.author, this.#snapshotProfileName(snapshot, item.reviewer.author), profileImage(reviewerMetadata)); }).join("") || `<p>No responses.</p>`}</div></div>
-          ${receipts.length ? `<div class="zap-comments"><h4>Zap comments</h4>${receipts.map((receipt) => `<p><strong>${(receipt.amountSats ?? 0).toLocaleString()} sats</strong>${receipt.comment ? ` · ${escapeHtml(receipt.comment)}` : ""}</p>`).join("")}</div>` : ""}
+          <div class="feedback-columns"><div><h4>What people liked</h4>${feedback.map((item) => { const reviewerMetadata = parseProfileMetadata(snapshot.profiles.get(item.reviewer.author) ?? null); return feedbackQuote(item.response.liked, item.reviewer.author, this.#snapshotProfileName(snapshot, item.reviewer.author), profileImage(reviewerMetadata)); }).join("") || `<p>No responses.</p>`}</div><div class="zap-comments"><h4>Zaps</h4>${receipts.map((receipt) => `<p><strong>⚡ ${(receipt.amountSats ?? 0).toLocaleString()} sats</strong>${receipt.comment ? ` · ${escapeHtml(receipt.comment)}` : ""}</p>`).join("") || `<p>No zaps.</p>`}</div></div>
         </article>`;
       }).join("")}</div></section>
       ${this.#renderFollowSuggestions(session, snapshot)}
@@ -735,10 +753,11 @@ export class DemoDayApp {
     const profile = entry ? this.#profile(entry.author) : null;
     const body = modal.status === "form" ? `<form data-form-action="submit-zap" data-draft-scope="zap"><p>Payment goes to <strong>${escapeHtml(profile?.name ?? "the presenter")}</strong>’s real Nostr account and targets this demo entry.</p>${field({ label: "Amount (sats)", name: "amount", value: this.#draft("zap", "amount", modal.amountSats), type: "number", min: 1, step: 1, required: true })}${textarea({ label: "Comment — optional", name: "comment", value: this.#draft("zap", "comment", modal.comment), maxlength: 280, rows: 3 })}<button class="button button-zap button-large" type="submit">⚡ Request invoice</button></form>`
       : modal.status === "loading" ? `<div class="modal-state"><span class="spinner large"></span><h3>Preparing Nostr zap…</h3><p>Checking LNURL support and requesting a signed invoice.</p></div>`
-      : modal.status === "invoice" ? `<div class="modal-state"><span class="zap-icon">⚡</span><h3>Invoice ready</h3><p>Pay with a Lightning wallet. The receipt will appear after the recipient’s service publishes it.</p><textarea class="invoice" readonly>${escapeHtml(modal.invoice ?? "")}</textarea><div class="form-actions"><a class="button button-zap" href="lightning:${escapeAttr(modal.invoice ?? "")}">Open wallet</a>${button("Copy invoice", "copy-invoice", { className: "button button-secondary" })}</div></div>`
+      : modal.status === "invoice" ? `<div class="modal-state"><span class="zap-icon">⚡</span><h3>Invoice ready</h3><p>Scan with a Lightning wallet. The receipt will appear after the recipient’s service publishes it.</p>${lightningQr(modal.invoice ?? "")}<textarea class="invoice" readonly>${escapeHtml(modal.invoice ?? "")}</textarea><div class="form-actions"><a class="button button-zap" href="lightning:${escapeAttr(modal.invoice ?? "")}">Open wallet</a>${button("Copy invoice", "copy-invoice", { className: "button button-secondary" })}</div></div>`
       : modal.status === "paid" ? `<div class="modal-state"><span class="zap-icon">✓</span><h3>Payment sent</h3><p>Waiting for the signed kind-9735 receipt on the demo-day relays.</p></div>`
+      : modal.status === "received" ? `<div class="modal-state"><span class="zap-icon">✓</span><h3>Zap received</h3><p>The signed kind-9735 receipt was found and added to the demo totals.</p></div>`
       : `<div class="modal-state"><h3>Zap unavailable</h3><p>${escapeHtml(modal.error ?? "The zap could not be prepared.")}</p>${button("Try again", "reset-zap", { className: "button button-secondary" })}</div>`;
-    return `<div class="modal-backdrop" data-action="close-zap"><section class="modal" role="dialog" aria-modal="true" aria-label="Zap presenter"><button class="modal-close" data-action="close-zap" aria-label="Close">×</button><span class="eyebrow">Presenter zap</span><h2>${escapeHtml(entry?.content.demo.name ?? "Demo")}</h2>${body}</section></div>`;
+    return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-label="Zap presenter"><button class="modal-close" data-action="close-zap" aria-label="Close">×</button><span class="eyebrow">Presenter zap</span><h2>${escapeHtml(entry?.content.demo.name ?? "Demo")}</h2>${body}</section></div>`;
   }
 
   #identityReady(identity: LocalIdentityV1): boolean {
@@ -802,6 +821,10 @@ export class DemoDayApp {
         entries: entries.map((entry) => ({ address: entry.address, realPubkey: entry.content.real_pubkey })),
       }).then((receipts) => {
         this.#receiptCache.set(address, { key, receipts });
+        const modal = this.#zapModal;
+        if (modal?.zapRequestId && receipts.some((receipt) => receipt.request.id === modal.zapRequestId)) {
+          this.#zapModal = { ...modal, status: "received" };
+        }
       }).finally(() => {
         this.#receiptLoading.delete(address);
         this.requestRender();
@@ -1318,7 +1341,7 @@ export class DemoDayApp {
     const amountSats = Number(rawAmount);
     const comment = clampText(String(formData.get("comment") ?? ""), 280);
     if (!/^[1-9]\d*$/.test(rawAmount) || !Number.isSafeInteger(amountSats)) throw new Error("Enter a positive whole-satoshi amount");
-    this.#zapModal = { ...modal, amountSats: String(amountSats), comment, status: "loading", error: null };
+    this.#zapModal = { ...modal, amountSats: String(amountSats), comment, status: "loading", invoice: null, zapRequestId: null, error: null };
     this.requestRender();
 
     const lookupRelays = dedupe([
@@ -1364,14 +1387,14 @@ export class DemoDayApp {
       try {
         await webln.enable();
         await webln.sendPayment(invoice.invoice);
-        this.#zapModal = { ...this.#zapModal, status: "paid", invoice: invoice.invoice, metadata } as ZapModalState;
+        this.#zapModal = { ...this.#zapModal, status: "paid", invoice: invoice.invoice, zapRequestId: request.id, metadata } as ZapModalState;
         this.requestRender();
         return;
       } catch {
         // Fall back to an invoice that can be copied or opened in another wallet.
       }
     }
-    this.#zapModal = { ...this.#zapModal, status: "invoice", invoice: invoice.invoice, metadata } as ZapModalState;
+    this.#zapModal = { ...this.#zapModal, status: "invoice", invoice: invoice.invoice, zapRequestId: request.id, metadata } as ZapModalState;
     this.requestRender();
   }
 
@@ -1711,6 +1734,7 @@ export class DemoDayApp {
           comment: "",
           status: "form",
           invoice: null,
+          zapRequestId: null,
           error: null,
           metadata: null,
         };
@@ -1721,7 +1745,7 @@ export class DemoDayApp {
       this.#zapModal = null;
       this.requestRender();
     } else if (action === "reset-zap") {
-      if (this.#zapModal) this.#zapModal = { ...this.#zapModal, status: "form", error: null, invoice: null };
+      if (this.#zapModal) this.#zapModal = { ...this.#zapModal, status: "form", error: null, invoice: null, zapRequestId: null };
       this.requestRender();
     } else if (action === "copy-invoice") {
       if (this.#zapModal?.invoice) void this.#copyText(this.#zapModal.invoice, "Lightning invoice copied.");

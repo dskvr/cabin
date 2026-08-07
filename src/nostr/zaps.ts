@@ -93,8 +93,11 @@ export async function requestZapInvoice({
     throw new Error(`Zap amount must be between ${Math.ceil(metadata.minSendable / 1000)} and ${Math.floor(metadata.maxSendable / 1000)} sats.`);
   }
   const callback = new URL(metadata.callback);
+  const lnurl = getTag(zapRequest, "lnurl");
+  if (!lnurl) throw new Error("Zap request is missing its LNURL tag.");
   callback.searchParams.set("amount", String(amountMsat));
   callback.searchParams.set("nostr", JSON.stringify(zapRequest));
+  callback.searchParams.set("lnurl", lnurl);
   if (comment && metadata.commentAllowed > 0) callback.searchParams.set("comment", comment.slice(0, metadata.commentAllowed));
   const response = await fetchImpl(callback, { headers: { accept: "application/json" } });
   if (!response.ok) throw new Error(`Invoice request failed (${response.status}).`);
