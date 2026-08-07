@@ -1420,6 +1420,10 @@ tr:last-child td {
   font-weight: 700;
 }
 
+.live-zap-comments {
+  margin-top: 18px;
+}
+
 .feedback-results .feedback-bubble,
 .feedback-columns .feedback-bubble {
   position: relative;

@@ -156,12 +156,29 @@ function feedbackQuote(text: string, pubkey: string, name: string, picture: stri
   return `<div class="feedback-message">${profileComponent({ picture, pubkey, name, size: "sm" })}<blockquote class="feedback-bubble"><p>${escapeHtml(text)}</p>${action}</blockquote></div>`;
 }
 
-function zapMessage(receipt: ZapReceipt, profile: ReturnType<typeof profileView> | null): string {
-  const sender = receipt.senderPubkey;
+function groupZapReceipts(receipts: ZapReceipt[]): ZapReceipt[][] {
+  const groups = new Map<string, ZapReceipt[]>();
+  for (const receipt of receipts) {
+    const key = receipt.senderPubkey ?? `anonymous:${receipt.event.id}`;
+    groups.set(key, [...(groups.get(key) ?? []), receipt]);
+  }
+  return [...groups.values()];
+}
+
+function zapMessage(receipts: ZapReceipt[], profile: ReturnType<typeof profileView> | null): string {
+  const sender = receipts[0]?.senderPubkey ?? null;
   const identity = sender && profile
     ? profileComponent({ picture: profile.picture, pubkey: sender, name: profile.name, size: "sm" })
     : `<span class="zap-anonymous">Anonymous</span>`;
-  return `<div class="zap-message">${identity}<p><strong>⚡ ${(receipt.amountSats ?? 0).toLocaleString()} sats</strong>${receipt.comment ? ` · ${escapeHtml(receipt.comment)}` : ""}</p></div>`;
+  const sats = receipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
+  const comments = receipts.map((receipt) => receipt.comment.trim()).filter(Boolean);
+  return `<div class="zap-message">${identity}<p><strong>⚡ ${sats.toLocaleString()} sats</strong>${comments.length ? ` · ${comments.map(escapeHtml).join(" · ")}` : ""}</p></div>`;
+}
+
+function isEditableControl(element: Element | null): element is HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement {
+  return element instanceof HTMLSelectElement
+    || element instanceof HTMLInputElement && !element.readOnly
+    || element instanceof HTMLTextAreaElement && !element.readOnly;
 }
 
 export class DemoDayApp {
@@ -219,7 +236,7 @@ export class DemoDayApp {
 
   requestRender(): void {
     const active = this.#root.ownerDocument.activeElement;
-    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) {
+    if (isEditableControl(active)) {
       this.#renderDeferred = true;
       return;
     }
@@ -370,6 +387,7 @@ export class DemoDayApp {
     }
     const entries = this.#repository.entriesForSession(session.address);
     this.#ensureZapSubscription(entries);
+    this.#receiptsForSession(session.address, entries);
     if (displayMode) return this.#renderDisplay(session, entries);
     if (session.state.closed_at_ms !== null) return this.#renderClosedSummary(session);
 
@@ -466,6 +484,11 @@ export class DemoDayApp {
     const profile = this.#profile(current.author);
     const metadata = parseProfileMetadata(this.#repository.getProfile(current.author));
     const hasZap = lightningUrlFromProfile(metadata) !== null;
+    const receipts = this.#receiptsForSession(session.address, entries)
+      .filter((receipt) => receipt.targetEntryAddress === current.address);
+    const zaps = groupZapReceipts(receipts)
+      .map((group) => zapMessage(group, group[0]?.senderPubkey ? this.#profile(group[0].senderPubkey) : null))
+      .join("");
     const ready = session.state.timer_started_at_ms === null;
     return `<section class="current-demo ${ready ? "ready" : "live"}">
       <div class="current-demo-top"><span class="live-pill">${ready ? "READY" : "LIVE"}</span><span>Presented by ${escapeHtml(profile.name)}</span></div>
@@ -476,6 +499,7 @@ export class DemoDayApp {
         ${hasZap ? button(`⚡ Zap ${escapeHtml(profile.name)}`, "open-zap", { className: "button button-zap", attrs: `data-entry-author="${escapeAttr(current.author)}"` }) : `<span class="zap-unavailable">Zap unavailable · no Lightning address</span>`}
       </div>
       ${ownEntry && current.author !== ownEntry.author ? this.#renderFeedbackForm(current.author, ownEntry, entries, "what do you like about this?") : ""}
+      ${zaps ? `<div class="zap-comments live-zap-comments"><h4>Zaps</h4>${zaps}</div>` : ""}
     </section>`;
   }
 
@@ -624,7 +648,7 @@ export class DemoDayApp {
           ${isLive ? `<div class="project-stats"><span>⚡ ${projectReceipts.length} zaps</span><span>${sats.toLocaleString()} sats</span></div>` : ""}
           <div class="project-links">${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}${isLive && canZap && entry.author !== ownEntry.author ? button("⚡ Zap", "open-zap", { className: "button button-zap button-small", attrs: `data-entry-author="${escapeAttr(entry.author)}"` }) : ""}</div>
           ${entry.author === ownEntry.author ? this.#renderOwnDemoEditor(ownEntry) : ""}
-          ${run ? `<details class="project-details" ${editingFeedback ? "open" : ""}><summary>View project details</summary><div class="project-feedback"><span>${feedback.length} feedback · ${projectReceipts.length} zaps</span>${entry.author !== ownEntry.author && (!hasOwnFeedback || editingFeedback) ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}" data-saved-note="${escapeAttr(ownFeedback.liked)}" data-note-saved="${hasSavedFeedback}"><h4>${editingFeedback ? "Edit your feedback" : "Your feedback"}</h4>${textarea({ label: "What did you like?", name: "liked", value: ownFeedbackDraft, maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit" data-unsaved-label="${editingFeedback ? "Save changes" : "Save feedback"}" ${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "disabled" : ""}>${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "✓ Saved" : editingFeedback ? "Save changes" : "Save feedback"}</button></form>` : ""}<div class="feedback-columns"><div>${feedback.length ? `<div class="feedback-results"><h4>What people liked</h4>${feedback.map((item) => { const reviewer = this.#profile(item.reviewer.author); const edit = item.reviewer.author === ownEntry.author ? button("Edit", "edit-feedback", { className: "button button-quiet button-small", attrs: `data-demo-author="${escapeAttr(entry.author)}"` }) : ""; return feedbackQuote(item.response.liked, item.reviewer.author, reviewer.name, reviewer.picture, edit); }).join("")}</div>` : `<h4>What people liked</h4><p>No responses.</p>`}</div><div class="zap-comments"><h4>Zaps</h4>${projectReceipts.map((receipt) => zapMessage(receipt, receipt.senderPubkey ? this.#profile(receipt.senderPubkey) : null)).join("") || `<p>No zaps.</p>`}</div></div></div></details>` : ""}
+          ${run ? `<details class="project-details" ${editingFeedback ? "open" : ""}><summary>View project details</summary><div class="project-feedback"><span>${feedback.length} feedback · ${projectReceipts.length} zaps</span>${entry.author !== ownEntry.author && (!hasOwnFeedback || editingFeedback) ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}" data-saved-note="${escapeAttr(ownFeedback.liked)}" data-note-saved="${hasSavedFeedback}"><h4>${editingFeedback ? "Edit your feedback" : "Your feedback"}</h4>${textarea({ label: "What did you like?", name: "liked", value: ownFeedbackDraft, maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit" data-unsaved-label="${editingFeedback ? "Save changes" : "Save feedback"}" ${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "disabled" : ""}>${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "✓ Saved" : editingFeedback ? "Save changes" : "Save feedback"}</button></form>` : ""}<div class="feedback-columns"><div>${feedback.length ? `<div class="feedback-results"><h4>What people liked</h4>${feedback.map((item) => { const reviewer = this.#profile(item.reviewer.author); const edit = item.reviewer.author === ownEntry.author ? button("Edit", "edit-feedback", { className: "button button-quiet button-small", attrs: `data-demo-author="${escapeAttr(entry.author)}"` }) : ""; return feedbackQuote(item.response.liked, item.reviewer.author, reviewer.name, reviewer.picture, edit); }).join("")}</div>` : `<h4>What people liked</h4><p>No responses.</p>`}</div><div class="zap-comments"><h4>Zaps</h4>${groupZapReceipts(projectReceipts).map((group) => zapMessage(group, group[0]?.senderPubkey ? this.#profile(group[0].senderPubkey) : null)).join("") || `<p>No zaps.</p>`}</div></div></div></details>` : ""}
         </article>`;
       }).join("")}</div>
     </section>`;
@@ -714,7 +738,7 @@ export class DemoDayApp {
         return `<article class="summary-project">
           <div class="summary-project-title"><span class="position-number">${index + 1}</span><div>${profileComponent({ picture: profileImage(metadata), pubkey: entry.author, name, size: "lg" })}<h3>${escapeHtml(entry.content.demo.name)}</h3><p>${escapeHtml(entry.content.demo.description)}</p>${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}</div></div>
           <div class="project-detail-grid">${profileNamed ? "" : `<div class="account-detail"><span>Account</span><code>${escapeHtml(realNpub)}</code></div>`}<div><span>Final Elo</span><strong>${elo?.rating.toFixed(6) ?? "—"}</strong></div><div><span>Presentation</span><strong>${formatClockSeconds(Math.floor(timing.presentation_ms / 1000))}</strong></div><div><span>Questions</span><strong>${formatClockSeconds(Math.floor(timing.questions_ms / 1000))}</strong></div><div><span>Overtime</span><strong>${formatClockSeconds(Math.floor(timing.overtime_ms / 1000), "+")}</strong></div><div><span>Zaps</span><strong>${receipts.length} · ${receipts.reduce((sum, item) => sum + (item.amountSats ?? 0), 0).toLocaleString()} sats</strong></div></div>
-          <div class="feedback-columns"><div><h4>What people liked</h4>${feedback.map((item) => { const reviewerMetadata = parseProfileMetadata(snapshot.profiles.get(item.reviewer.author) ?? null); return feedbackQuote(item.response.liked, item.reviewer.author, this.#snapshotProfileName(snapshot, item.reviewer.author), profileImage(reviewerMetadata)); }).join("") || `<p>No responses.</p>`}</div><div class="zap-comments"><h4>Zaps</h4>${receipts.map((receipt) => { const sender = receipt.senderPubkey; const senderProfile = sender ? profileView(snapshot.profiles.get(sender) ?? null, sender) : null; return zapMessage(receipt, senderProfile); }).join("") || `<p>No zaps.</p>`}</div></div>
+          <div class="feedback-columns"><div><h4>What people liked</h4>${feedback.map((item) => { const reviewerMetadata = parseProfileMetadata(snapshot.profiles.get(item.reviewer.author) ?? null); return feedbackQuote(item.response.liked, item.reviewer.author, this.#snapshotProfileName(snapshot, item.reviewer.author), profileImage(reviewerMetadata)); }).join("") || `<p>No responses.</p>`}</div><div class="zap-comments"><h4>Zaps</h4>${groupZapReceipts(receipts).map((group) => { const sender = group[0]?.senderPubkey; const senderProfile = sender ? profileView(snapshot.profiles.get(sender) ?? null, sender) : null; return zapMessage(group, senderProfile); }).join("") || `<p>No zaps.</p>`}</div></div>
         </article>`;
       }).join("")}</div></section>
       ${this.#renderFollowSuggestions(session, snapshot)}
@@ -817,11 +841,25 @@ export class DemoDayApp {
     return profileDisplayName(metadata, fallback);
   }
 
+  #detectZapReceipt(receipts: ZapReceipt[]): void {
+    const modal = this.#zapModal;
+    if (
+      modal?.zapRequestId
+      && modal.status !== "received"
+      && receipts.some((receipt) => receipt.request.id === modal.zapRequestId)
+    ) {
+      this.#zapModal = { ...modal, status: "received" };
+    }
+  }
+
   #receiptsForSession(address: string, entries: ParsedEntry[]): ZapReceipt[] {
     const zapEvents = this.#repository.zapEvents();
     const key = `${entries.map((entry) => `${entry.event.id}:${entry.address}`).sort().join("|")}::${zapEvents.map((event) => event.id).sort().join("|")}`;
     const cached = this.#receiptCache.get(address);
-    if (cached?.key === key) return cached.receipts;
+    if (cached?.key === key) {
+      this.#detectZapReceipt(cached.receipts);
+      return cached.receipts;
+    }
     if (!this.#receiptLoading.has(address)) {
       this.#receiptLoading.add(address);
       void collectZapReceipts({
@@ -829,10 +867,7 @@ export class DemoDayApp {
         entries: entries.map((entry) => ({ address: entry.address, realPubkey: entry.content.real_pubkey })),
       }).then((receipts) => {
         this.#receiptCache.set(address, { key, receipts });
-        const modal = this.#zapModal;
-        if (modal?.zapRequestId && receipts.some((receipt) => receipt.request.id === modal.zapRequestId)) {
-          this.#zapModal = { ...modal, status: "received" };
-        }
+        this.#detectZapReceipt(receipts);
       }).finally(() => {
         this.#receiptLoading.delete(address);
         this.requestRender();
@@ -1529,7 +1564,7 @@ export class DemoDayApp {
     globalThis.setTimeout(() => {
       if (!this.#renderDeferred) return;
       const active = this.#root.ownerDocument.activeElement;
-      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return;
+      if (isEditableControl(active)) return;
       this.#renderDeferred = false;
       this.requestRender();
     }, 0);
