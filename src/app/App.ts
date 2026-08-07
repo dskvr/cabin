@@ -326,27 +326,29 @@ export class DemoDayApp {
   }
 
   #renderHome(): string {
-    const sessions = this.#repository.activeSessions();
+    const sessions = this.#repository.sessions();
+    const activeSessionCount = sessions.filter((session) => session.state.closed_at_ms === null).length;
     const identity = getOrCreateIdentity();
     const cards = sessions.map((session) => {
       const entries = this.#repository.entriesForSession(session.address);
       const hasDemo = entries.some((entry) => entry.author === identity.public_key_hex);
       const captain = this.#profile(session.event.pubkey);
       const naddr = sessionNaddr(session.event.pubkey, session.d);
+      const closed = session.state.closed_at_ms !== null;
       return `<article class="session-card">
         <div class="session-card-head">
-          <div><span class="eyebrow">Active demo day</span><h2>${escapeHtml(session.state.name)}</h2>${profileComponent({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name, size: "lg" })}</div>
+          <div><span class="eyebrow">${closed ? "Closed demo day" : "Active demo day"}</span><h2>${escapeHtml(session.state.name)}</h2>${profileComponent({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name, size: "lg" })}</div>
         </div>
         <div class="session-metrics">
           <div><strong>${entries.length}</strong><span>participants</span></div>
         </div>
         <div class="card-actions">
-          <a class="button button-primary" href="#/session/${escapeAttr(naddr)}">${hasDemo ? "Open" : "Join"}</a>
+          <a class="button button-primary" href="#/session/${escapeAttr(naddr)}">${closed || hasDemo ? "Open" : "Join"}</a>
         </div>
       </article>`;
     }).join("");
 
-    return `${sessions.length === 0 ? `<section class="hero">
+    return `${activeSessionCount === 0 ? `<section class="hero">
       <h1>SOVEREIGN ENGINEERING<br>Demo Day</h1>
       <a class="button button-primary button-large" href="#/create">I AM THE CAPTAIN NOW</a>
     </section>` : ""}
