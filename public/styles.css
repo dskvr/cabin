@@ -395,6 +395,10 @@ code,
   gap: 18px;
 }
 
+.project-grid {
+  grid-template-columns: 1fr;
+}
+
 .session-card,
 .panel,
 .project-card,
@@ -453,7 +457,7 @@ code,
 }
 
 .session-metrics {
-  grid-template-columns: 0.65fr 1.35fr;
+  grid-template-columns: 1fr;
   margin: 28px 0 20px;
 }
 
@@ -911,6 +915,11 @@ code,
   min-width: 0;
 }
 
+.session-focus {
+  width: min(900px, 100%);
+  margin-inline: auto;
+}
+
 .current-demo {
   position: relative;
   overflow: hidden;
@@ -942,6 +951,27 @@ code,
   max-width: 850px;
   color: #41463f;
   font-size: 1.03rem;
+}
+
+.focus-feedback {
+  position: relative;
+  margin-top: 28px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.focus-feedback textarea {
+  min-height: 120px;
+}
+
+.focus-feedback .live-feedback-results {
+  margin: 18px 0;
+  padding: 16px;
+  box-shadow: none;
+}
+
+.feedback-prompt {
+  border-color: #a8cdb9;
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.97), rgba(220, 239, 229, 0.92));
 }
 
 .timer {
@@ -1025,6 +1055,10 @@ code,
 
 .captain-button-grid .button-danger {
   grid-column: 1 / -1;
+}
+
+.captain-controls-live .captain-button-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .project-card {
@@ -1359,6 +1393,9 @@ tr:last-child td {
 .feedback-results .feedback-bubble,
 .feedback-columns .feedback-bubble {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   width: fit-content;
   max-width: min(680px, calc(100% - 44px));
   margin: 0;
@@ -1383,7 +1420,11 @@ tr:last-child td {
 
 .feedback-bubble p {
   position: relative;
-  margin: 0 0 5px;
+  margin: 0;
+}
+
+.feedback-bubble .button {
+  flex: 0 0 auto;
 }
 
 .feedback-bubble cite {
@@ -1432,6 +1473,10 @@ footer {
 footer nav {
   display: flex;
   gap: 18px;
+}
+
+footer a {
+  text-decoration: none;
 }
 
 .busy-overlay {
@@ -1519,13 +1564,24 @@ footer nav {
 }
 
 /* Full-room display */
-.display-shell,
-.display-main {
-  min-height: 100vh;
+.display-shell {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 .display-main {
   display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   background: #10120f;
 }
 
@@ -1533,24 +1589,18 @@ footer nav {
   position: relative;
   display: grid;
   place-content: center;
-  min-height: 100vh;
-  padding: clamp(36px, 8vw, 110px);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: clamp(24px, 5vmin, 64px);
   overflow: hidden;
   color: #fff;
   text-align: center;
-  background:
-    radial-gradient(circle at 75% 5%, rgba(239,109,63,.23), transparent 32vw),
-    radial-gradient(circle at 10% 90%, rgba(49,92,130,.18), transparent 35vw),
-    #10120f;
+  background: #10120f;
 }
 
 .display-stage::before {
-  content: "";
-  position: absolute;
-  inset: 24px;
-  border: 1px solid rgba(255,255,255,.14);
-  border-radius: 26px;
-  pointer-events: none;
+  content: none;
 }
 
 .display-exit {
@@ -1576,9 +1626,9 @@ footer nav {
 
 .display-stage h1 {
   max-width: 1400px;
-  margin: 20px auto;
-  font-size: clamp(3.2rem, 10vw, 10rem);
-  line-height: .9;
+  margin: clamp(10px, 2vh, 20px) auto;
+  font-size: clamp(2.5rem, min(8vw, 13vh), 8rem);
+  line-height: .94;
   overflow-wrap: anywhere;
 }
 
@@ -1586,9 +1636,9 @@ footer nav {
   max-width: 1050px;
   margin: 0 auto;
   color: rgba(255,255,255,.69);
-  font-size: clamp(1.2rem, 2.5vw, 2rem);
+  font-size: clamp(1rem, min(2.2vw, 3vh), 1.75rem);
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -1610,7 +1660,7 @@ footer nav {
 .display-stage [data-timer-value] {
   display: block;
   margin-top: 10px;
-  font-size: clamp(6rem, 21vw, 19rem);
+  font-size: clamp(4rem, min(18vw, 28vh), 14rem);
   font-weight: 900;
   line-height: .85;
   letter-spacing: -.08em;
@@ -1625,8 +1675,12 @@ footer nav {
 .display-stage.timer-overtime [data-timer-value] { color: #ff8b7e; }
 
 .display-summary {
+  max-width: 900px;
+  padding: clamp(24px, 5vmin, 64px);
+  overflow: hidden;
   color: rgba(255,255,255,.68);
   font-size: clamp(1rem, 2vw, 1.5rem);
+  text-align: center;
 }
 
 .between-count {

@@ -133,8 +133,8 @@ function hasProfileName(metadata: ProfileMetadata): boolean {
   return [metadata.display_name, metadata.name].some((value) => typeof value === "string" && value.trim());
 }
 
-function feedbackQuote(text: string, pubkey: string, name: string, picture: string | null): string {
-  return `<div class="feedback-message">${profileComponent({ picture, pubkey, name, size: "sm" })}<blockquote class="feedback-bubble"><p>${escapeHtml(text)}</p></blockquote></div>`;
+function feedbackQuote(text: string, pubkey: string, name: string, picture: string | null, action = ""): string {
+  return `<div class="feedback-message">${profileComponent({ picture, pubkey, name, size: "sm" })}<blockquote class="feedback-bubble"><p>${escapeHtml(text)}</p>${action}</blockquote></div>`;
 }
 
 export class DemoDayApp {
@@ -158,6 +158,7 @@ export class DemoDayApp {
   #draggedDemo: string | null = null;
   #rankingPublishTimer: number | null = null;
   #pendingRanking: string[] | null = null;
+  #editingFeedback = new Set<string>();
   #timerInterval: number | null = null;
   #renderQueued = false;
   #renderDeferred = false;
@@ -235,7 +236,7 @@ export class DemoDayApp {
         `}
         ${this.#notice?.kind === "error" ? `<div class="notice notice-error" role="alert">${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
         <main class="${this.#route.name === "display" ? "display-main" : "page"}">${page}</main>
-        ${this.#route.name === "display" ? "" : `<footer><span>No backend. Signed state on Nostr.</span><nav>${this.#route.name === "session" ? `<a href="#/display/${escapeAttr(this.#route.naddr)}">Open display</a>` : ""}<a href="#/">Active demo days</a><a href="#/advanced">Advanced</a></nav></footer>`}
+        ${this.#route.name === "display" ? "" : `<footer><nav>${this.#route.name === "session" ? `<a href="#/display/${escapeAttr(this.#route.naddr)}" data-fullscreen-display>Front of room display</a>` : ""}<a href="#/create">I AM THE CAPTAIN NOW</a><a href="#/">Active demo days</a><a href="#/advanced">Advanced</a></nav></footer>`}
         ${this.#busy ? `<div class="busy-overlay" role="status"><span class="spinner"></span><strong>${escapeHtml(this.#busy)}</strong></div>` : ""}
         ${this.#renderZapModal()}
       </div>
@@ -268,12 +269,11 @@ export class DemoDayApp {
 
   #renderHome(): string {
     const sessions = this.#repository.activeSessions();
+    const identity = getOrCreateIdentity();
     const cards = sessions.map((session) => {
       const entries = this.#repository.entriesForSession(session.address);
+      const hasDemo = entries.some((entry) => entry.author === identity.public_key_hex);
       const captain = this.#profile(session.event.pubkey);
-      const currentEntry = session.state.current_demo_pubkey
-        ? entries.find((entry) => entry.author === session.state.current_demo_pubkey) ?? null
-        : null;
       const naddr = sessionNaddr(session.event.pubkey, session.d);
       return `<article class="session-card">
         <div class="session-card-head">
@@ -281,20 +281,17 @@ export class DemoDayApp {
         </div>
         <div class="session-metrics">
           <div><strong>${entries.length}</strong><span>participants</span></div>
-          <div><strong>${escapeHtml(currentEntry?.content.demo.name ?? "Between demos")}</strong><span>current project</span></div>
         </div>
         <div class="card-actions">
-          <a class="button button-primary" href="#/session/${escapeAttr(naddr)}">Join</a>
-          <a class="button button-secondary" href="#/display/${escapeAttr(naddr)}">Display</a>
+          <a class="button button-primary" href="#/session/${escapeAttr(naddr)}">${hasDemo ? "Open" : "Join"}</a>
         </div>
       </article>`;
     }).join("");
 
-    return `<section class="hero">
-      <div><span class="eyebrow">Live on Nostr</span><h1>Run a demo day without a server.</h1><p>Join, present, rank, give feedback, zap presenters, and leave with a verifiable session record.</p></div>
-      <a class="button button-primary button-large" href="#/create">Start a demo day</a>
-    </section>
-    <section class="section-heading"><div><span class="eyebrow">Discovery</span><h2>Active demo days</h2></div><span>${sessions.length} found</span></section>
+    return `${sessions.length === 0 ? `<section class="hero">
+      <h1>SOVEREIGN ENGINEERING<br>Demo Day</h1>
+      <a class="button button-primary button-large" href="#/create">I AM THE CAPTAIN NOW</a>
+    </section>` : ""}
     <section class="card-grid">${cards || `<div class="empty-state compact"><h3>No active demo days found</h3><p>The app is listening on the ten fixed relays. You can start the first session.</p></div>`}</section>`;
   }
 
@@ -306,7 +303,7 @@ export class DemoDayApp {
     const profile = this.#profile(identity.public_key_hex);
     return `<section class="narrow-page">
       <a class="back-link" href="#/">← Active demo days</a>
-      <span class="eyebrow">Create session</span><h1>Start a demo day</h1>
+      <span class="eyebrow">Create session</span><h1>Create a new demo day</h1>
       ${profileComponent({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name, className: "profile-confirm" })}
       <form class="panel form-stack" data-form-action="create-session" data-draft-scope="create">
         ${field({ label: "Demo-day name", name: "session_name", value: this.#draft("create", "session_name"), placeholder: "SEC-08 — Week 3 Demo Day", required: true, maxlength: 140 })}
@@ -342,7 +339,7 @@ export class DemoDayApp {
   #renderSession(selected: SelectedSession, displayMode: boolean): string {
     const session = this.#repository.getSession(selected);
     if (!session) {
-      return `<section class="empty-state ${displayMode ? "display-wait" : ""}"><span class="spinner large"></span><h1>Loading demo day…</h1><p>Waiting for a valid session event from the selected captain.</p>${displayMode ? `<a class="button button-secondary" href="#/">Exit display</a>` : `<a class="back-link" href="#/">← Active demo days</a>`}</section>`;
+      return `<section class="empty-state ${displayMode ? "display-wait" : ""}"><span class="spinner large"></span><h1>Loading demo day…</h1><p>Waiting for a valid session event from the selected captain.</p>${displayMode ? `<a class="button button-secondary" href="#/" data-exit-fullscreen>Exit</a>` : `<a class="back-link" href="#/">← Active demo days</a>`}</section>`;
     }
     const entries = this.#repository.entriesForSession(session.address);
     this.#ensureZapSubscription(entries);
@@ -377,18 +374,18 @@ export class DemoDayApp {
 
   #renderDisplay(session: ParsedSession, entries: ParsedEntry[]): string {
     if (session.state.closed_at_ms !== null) {
-      return `<div class="display-summary"><span class="eyebrow">Demo day closed</span><h1>${escapeHtml(session.state.name)}</h1><p>The final summary is available on participant devices.</p><a class="button button-secondary" href="#/">Exit display</a></div>`;
+      return `<div class="display-summary"><span class="eyebrow">Demo day closed</span><h1>${escapeHtml(session.state.name)}</h1><p>The final summary is available on participant devices.</p><a class="button button-secondary" href="#/" data-exit-fullscreen>Exit</a></div>`;
     }
     const current = session.state.current_demo_pubkey
       ? entries.find((entry) => entry.author === session.state.current_demo_pubkey) ?? null
       : null;
     if (!current) {
-      return `<div class="display-stage waiting"><a class="display-exit" href="#/">Exit</a><span class="display-kicker">${escapeHtml(session.state.name)}</span><h1>Waiting for the next demonstration</h1><div class="display-rule"></div><p>${entries.length} participants joined</p></div>`;
+      return `<div class="display-stage waiting"><a class="display-exit" href="#/" data-exit-fullscreen>Exit</a><span class="display-kicker">${escapeHtml(session.state.name)}</span><h1>Waiting for the next demonstration</h1><div class="display-rule"></div><p>${entries.length} participants joined</p></div>`;
     }
     const profile = this.#profile(current.author);
     const ready = session.state.timer_started_at_ms === null;
     return `<div class="display-stage ${ready ? "ready" : "running"}">
-      <a class="display-exit" href="#/">Exit</a>
+      <a class="display-exit" href="#/" data-exit-fullscreen>Exit</a>
       <span class="display-kicker">Presented by ${escapeHtml(profile.name)}</span>
       <h1>${escapeHtml(current.content.demo.name)}</h1>
       ${ready ? `<p class="display-description">${escapeHtml(current.content.demo.description)}</p><div class="display-phase ready-label">READY</div>` : this.#renderTimer(session.state.timer_started_at_ms, true)}
@@ -407,7 +404,26 @@ export class DemoDayApp {
     const current = session.state.current_demo_pubkey
       ? entries.find((entry) => entry.author === session.state.current_demo_pubkey) ?? null
       : null;
+    const lastPresentedAuthor = session.state.presented.at(-1)?.pubkey ?? null;
+    const lastPresented = lastPresentedAuthor
+      ? entries.find((entry) => entry.author === lastPresentedAuthor) ?? null
+      : null;
+    const needsFeedback = lastPresented
+      && lastPresented.author !== ownEntry.author
+      && !ownEntry.content.feedback[lastPresented.author]?.liked.trim();
     const elo = calculateElo(completed, entries);
+    if (current) {
+      return `<section class="session-main session-focus">
+        ${this.#renderCurrentDemo(session, current, ownEntry, entries)}
+        ${isCaptain ? this.#renderCaptainControls(session, entries) : ""}
+      </section>`;
+    }
+    if (needsFeedback) {
+      return `<section class="session-main session-focus">
+        ${this.#renderFeedbackPrompt(lastPresented, ownEntry, entries)}
+        ${isCaptain ? this.#renderCaptainControls(session, entries) : ""}
+      </section>`;
+    }
     return `<section class="session-main">
       <div class="session-title-row"><div>${isCaptain ? `<span class="eyebrow">Captain session</span>` : ""}<h1>${escapeHtml(session.state.name)}</h1>${captainCard({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name })}<p>${entries.length} participants</p></div></div>
       ${this.#renderCurrentDemo(session, current)}
@@ -418,7 +434,7 @@ export class DemoDayApp {
     </section>`;
   }
 
-  #renderCurrentDemo(session: ParsedSession, current: ParsedEntry | null): string {
+  #renderCurrentDemo(session: ParsedSession, current: ParsedEntry | null, ownEntry?: ParsedEntry, entries: ParsedEntry[] = []): string {
     if (!current) return "";
     const profile = this.#profile(current.author);
     const metadata = parseProfileMetadata(this.#repository.getProfile(current.author));
@@ -432,7 +448,38 @@ export class DemoDayApp {
         ${current.content.demo.link ? `<a class="button button-secondary" href="${escapeAttr(current.content.demo.link)}" target="_blank" rel="noreferrer">Open project</a>` : ""}
         ${hasZap ? button(`⚡ Zap ${escapeHtml(profile.name)}`, "open-zap", { className: "button button-zap", attrs: `data-entry-author="${escapeAttr(current.author)}"` }) : `<span class="zap-unavailable">Zap unavailable · no Lightning address</span>`}
       </div>
+      ${ownEntry && current.author !== ownEntry.author ? this.#renderFeedbackForm(current.author, ownEntry, entries, "what do you like about this?") : ""}
     </section>`;
+  }
+
+  #renderFeedbackPrompt(demo: ParsedEntry, ownEntry: ParsedEntry, entries: ParsedEntry[]): string {
+    const profile = this.#profile(demo.author);
+    const scope = `feedback-${demo.author}`;
+    const hasDraft = this.#draft(scope, "liked", "").trim().length > 0;
+    return `<section class="current-demo feedback-prompt">
+      <div class="current-demo-top"><span class="live-pill">DONE</span><span>Presented by ${escapeHtml(profile.name)}</span></div>
+      <h2>${escapeHtml(demo.content.demo.name)}</h2>
+      ${this.#renderFeedbackForm(demo.author, ownEntry, entries, hasDraft ? "what do you like about this?" : "what's the best thing about this project?")}
+    </section>`;
+  }
+
+  #renderFeedbackForm(demoAuthor: string, ownEntry: ParsedEntry, entries: ParsedEntry[], question: string): string {
+    const scope = `feedback-${demoAuthor}`;
+    const feedback = ownEntry.content.feedback[demoAuthor];
+    const saved = feedback?.liked ?? "";
+    const draft = this.#draft(scope, "liked", saved);
+    const isSaved = feedback !== undefined && draft === saved;
+    const otherComments = entries.flatMap((entry) => {
+      const comment = entry.content.feedback[demoAuthor]?.liked.trim();
+      if (entry.author === ownEntry.author || !comment) return [];
+      const profile = this.#profile(entry.author);
+      return [feedbackQuote(comment, entry.author, profile.name, profile.picture)];
+    });
+    return `<form class="feedback-form focus-feedback" data-form-action="save-feedback" data-demo-author="${escapeAttr(demoAuthor)}" data-draft-scope="${escapeAttr(scope)}" data-saved-note="${escapeAttr(saved)}" data-note-saved="${feedback !== undefined}">
+      ${textarea({ label: question, name: "liked", value: draft, maxlength: 280, rows: 4 })}
+      <button class="button button-primary" type="submit" data-unsaved-label="Save note" ${isSaved ? "disabled" : ""}>${isSaved ? "✓ Saved" : "Save note"}</button>
+      ${otherComments.length ? `<div class="feedback-results live-feedback-results"><h4>What other people liked</h4>${otherComments.join("")}</div>` : ""}
+    </form>`;
   }
 
   #renderTimer(startedAtMs: number | null, display: boolean): string {
@@ -457,6 +504,16 @@ export class DemoDayApp {
     if (selected && selected !== drafted) this.#drafts.set("captain:project", selected);
     const hasCurrent = session.state.current_demo_pubkey !== null;
     const timerRunning = session.state.timer_started_at_ms !== null;
+    if (hasCurrent) {
+      return `<section class="panel captain-controls captain-controls-live">
+        <div class="panel-heading"><div><span class="eyebrow">Captain controls</span><h2>Current demo</h2></div></div>
+        <div class="captain-button-grid">
+          ${button("START TIMER", "captain-start", { className: "button button-primary", disabled: timerRunning })}
+          ${button("RESTART", "captain-restart", { className: "button button-secondary", disabled: !timerRunning })}
+          ${button("DONE", "captain-done", { className: "button button-secondary", disabled: !timerRunning })}
+        </div>
+      </section>`;
+    }
     return `<section class="panel captain-controls">
       <div class="panel-heading"><div><span class="eyebrow">Captain controls</span><h2>Run the room</h2></div><span>${unpresented.length} unpresented</span></div>
       <label class="field"><span>Select project</span><select name="project" data-draft-scope="captain" ${hasCurrent ? "disabled" : ""}>
@@ -474,15 +531,12 @@ export class DemoDayApp {
 
   #renderLeaderboard(rows: ReturnType<typeof calculateElo>["rows"], entries: ParsedEntry[], session: ParsedSession): string {
     const entryMap = new Map(entries.map((entry) => [entry.author, entry]));
-    const receipts = this.#receiptsForSession(session.address, entries);
     return `<section class="panel leaderboard">
       <div class="panel-heading"><h2>Leaderboard</h2><span>${session.state.presented.length} completed</span></div>
-      ${rows.length === 0 ? "" : `<div class="table-scroll"><table><thead><tr><th>Rank</th><th>Project</th><th>Presenter</th><th>Elo</th><th>Pairwise votes</th><th>Zaps</th><th>Sats</th></tr></thead><tbody>${rows.map((row, index) => {
+      ${rows.length === 0 ? "" : `<div class="table-scroll"><table><thead><tr><th>Rank</th><th>Project</th><th>Presenter</th><th>Elo</th></tr></thead><tbody>${rows.map((row, index) => {
         const entry = entryMap.get(row.pubkey);
         const profile = this.#profile(row.pubkey);
-        const demoReceipts = receipts.filter((receipt) => receipt.targetEntryAddress === entry?.address);
-        const sats = demoReceipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
-        return `<tr><td><span class="rank-badge">${index + 1}</span></td><td><strong>${escapeHtml(entry?.content.demo.name ?? shorten(row.pubkey))}</strong></td><td>${profileComponent({ picture: profile.picture, pubkey: row.pubkey, name: profile.name, size: "sm" })}</td><td class="numeric">${Math.round(row.rating)}</td><td class="numeric">${row.pairwiseVotes}</td><td class="numeric">${demoReceipts.length}</td><td class="numeric">${sats.toLocaleString()}</td></tr>`;
+        return `<tr><td><span class="rank-badge">${index + 1}</span></td><td><strong>${escapeHtml(entry?.content.demo.name ?? shorten(row.pubkey))}</strong></td><td>${profileComponent({ picture: profile.picture, pubkey: row.pubkey, name: profile.name, size: "sm" })}</td><td class="numeric">${Math.round(row.rating)}</td></tr>`;
       }).join("")}</tbody></table></div>`}
     </section>`;
   }
@@ -507,10 +561,9 @@ export class DemoDayApp {
 
   #renderProjectDirectory(session: ParsedSession, entries: ParsedEntry[], ownEntry: ParsedEntry): string {
     const position = new Map(session.state.presented.map((run, index) => [run.pubkey, index]));
-    const waiting = entries.filter((entry) => (
-      entry.author !== session.state.current_demo_pubkey && !position.has(entry.author)
-    ));
-    const sorted = waiting.sort((a, b) => {
+    const projects = entries.filter((entry) => entry.author !== session.state.current_demo_pubkey);
+    const waitingCount = projects.filter((entry) => !position.has(entry.author)).length;
+    const sorted = projects.sort((a, b) => {
       const aPosition = position.get(a.author);
       const bPosition = position.get(b.author);
       if (aPosition != null && bPosition != null) return aPosition - bPosition;
@@ -520,7 +573,7 @@ export class DemoDayApp {
     });
     const receipts = this.#receiptsForSession(session.address, entries);
     return `<section class="project-section">
-      <div class="section-heading"><h2>Waiting to present</h2><span>${waiting.length} projects</span></div>
+      <div class="section-heading"><h2>Projects</h2><span>${waitingCount} waiting to present</span></div>
       <div class="project-grid">${sorted.map((entry) => {
         const profile = this.#profile(entry.author);
         const run = session.state.presented.find((item) => item.pubkey === entry.author) ?? null;
@@ -529,6 +582,10 @@ export class DemoDayApp {
           return response?.liked.trim() ? [{ reviewer, response }] : [];
         });
         const ownFeedback = ownEntry.content.feedback[entry.author] ?? { liked: "" };
+        const hasSavedFeedback = ownEntry.content.feedback[entry.author] !== undefined;
+        const ownFeedbackDraft = this.#draft(`feedback-${entry.author}`, "liked", ownFeedback.liked);
+        const hasOwnFeedback = ownFeedback.liked.trim().length > 0;
+        const editingFeedback = this.#editingFeedback.has(entry.author);
         const isLive = session.state.current_demo_pubkey === entry.author;
         const metadata = parseProfileMetadata(this.#repository.getProfile(entry.author));
         const canZap = lightningUrlFromProfile(metadata) !== null;
@@ -540,7 +597,7 @@ export class DemoDayApp {
           ${isLive ? `<div class="project-stats"><span>⚡ ${projectReceipts.length} zaps</span><span>${sats.toLocaleString()} sats</span></div>` : ""}
           <div class="project-links">${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}${isLive && canZap && entry.author !== ownEntry.author ? button("⚡ Zap", "open-zap", { className: "button button-zap button-small", attrs: `data-entry-author="${escapeAttr(entry.author)}"` }) : ""}</div>
           ${entry.author === ownEntry.author ? this.#renderOwnDemoEditor(ownEntry) : ""}
-          ${run ? `<details class="project-details"><summary>View project details</summary><div class="project-feedback"><span>${feedback.length} feedback</span>${entry.author !== ownEntry.author ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}"><h4>Your feedback</h4>${textarea({ label: "What did you like?", name: "liked", value: this.#draft(`feedback-${entry.author}`, "liked", ownFeedback.liked), maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit">Save feedback</button></form>` : ""}${feedback.length ? `<div class="feedback-results"><h4>What people liked</h4>${feedback.map((item) => { const reviewer = this.#profile(item.reviewer.author); return feedbackQuote(item.response.liked, item.reviewer.author, reviewer.name, reviewer.picture); }).join("")}</div>` : ""}</div></details>` : ""}
+          ${run ? `<details class="project-details" ${editingFeedback ? "open" : ""}><summary>View project details</summary><div class="project-feedback"><span>${feedback.length} feedback</span>${entry.author !== ownEntry.author && (!hasOwnFeedback || editingFeedback) ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}" data-saved-note="${escapeAttr(ownFeedback.liked)}" data-note-saved="${hasSavedFeedback}"><h4>${editingFeedback ? "Edit your feedback" : "Your feedback"}</h4>${textarea({ label: "What did you like?", name: "liked", value: ownFeedbackDraft, maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit" data-unsaved-label="${editingFeedback ? "Save changes" : "Save feedback"}" ${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "disabled" : ""}>${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "✓ Saved" : editingFeedback ? "Save changes" : "Save feedback"}</button></form>` : ""}${feedback.length ? `<div class="feedback-results"><h4>What people liked</h4>${feedback.map((item) => { const reviewer = this.#profile(item.reviewer.author); const edit = item.reviewer.author === ownEntry.author ? button("Edit", "edit-feedback", { className: "button button-quiet button-small", attrs: `data-demo-author="${escapeAttr(entry.author)}"` }) : ""; return feedbackQuote(item.response.liked, item.reviewer.author, reviewer.name, reviewer.picture, edit); }).join("")}</div>` : ""}</div></details>` : ""}
         </article>`;
       }).join("")}</div>
     </section>`;
@@ -1407,8 +1464,18 @@ export class DemoDayApp {
     const scope = target.dataset.draftScope ?? target.closest<HTMLFormElement>("form")?.dataset.draftScope;
     if (!scope) return;
     this.#drafts.set(`${scope}:${target.name}`, target.value);
+    if (target.name === "liked") this.#updateFeedbackSubmit(target);
     if (scope === "profile" && target.name === "real_npub") this.#maybeImportProfileNpub(target.value);
   };
+
+  #updateFeedbackSubmit(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): void {
+    const form = input.closest<HTMLFormElement>('form[data-form-action="save-feedback"]');
+    const submit = form?.querySelector<HTMLButtonElement>('button[type="submit"]');
+    if (!form || !submit) return;
+    const isSaved = form.dataset.noteSaved === "true" && input.value === (form.dataset.savedNote ?? "");
+    submit.disabled = isSaved;
+    submit.textContent = isSaved ? "✓ Saved" : (submit.dataset.unsavedLabel ?? "Save note");
+  }
 
   #maybeImportProfileNpub(value: string): boolean {
     let normalized: string;
@@ -1486,12 +1553,15 @@ export class DemoDayApp {
       const liked = clampText(String(data.get("liked") ?? ""), 280);
       void this.#withBusy("Saving feedback", async () => {
         const session = this.#currentSession();
-        if (!session?.state.presented.some((run) => run.pubkey === demoAuthor)) throw new Error("Feedback is available only after the demo is marked DONE");
+        const isCurrent = session?.state.current_demo_pubkey === demoAuthor;
+        const isPresented = session?.state.presented.some((run) => run.pubkey === demoAuthor) ?? false;
+        if (!isCurrent && !isPresented) throw new Error("Notes are available only for the current or a completed demo");
         await this.#publishOwnEntry((content) => ({
           ...content,
           feedback: { ...content.feedback, [demoAuthor]: { liked } },
           updated_at_ms: Date.now(),
         }));
+        this.#editingFeedback.delete(demoAuthor);
         this.#clearDraftScope(`feedback-${demoAuthor}`);
         this.#notice = { kind: "success", text: "Feedback saved." };
       });
@@ -1526,6 +1596,18 @@ export class DemoDayApp {
   readonly #onClick = (event: MouseEvent): void => {
     const target = event.target;
     if (!(target instanceof Element)) return;
+    const fullscreenLink = target.closest<HTMLAnchorElement>("a[data-fullscreen-display]");
+    if (fullscreenLink) {
+      const document = this.#root.ownerDocument;
+      if (!document.fullscreenElement) void document.documentElement.requestFullscreen().catch(() => undefined);
+      return;
+    }
+    const exitFullscreenLink = target.closest<HTMLAnchorElement>("a[data-exit-fullscreen]");
+    if (exitFullscreenLink) {
+      const document = this.#root.ownerDocument;
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+      return;
+    }
     if (target.classList.contains("modal-backdrop")) {
       this.#zapModal = null;
       this.requestRender();
@@ -1541,6 +1623,12 @@ export class DemoDayApp {
     if (action === "dismiss-notice") {
       this.#notice = null;
       this.requestRender();
+    } else if (action === "edit-feedback") {
+      const demoAuthor = actionElement.dataset.demoAuthor;
+      if (demoAuthor) {
+        this.#editingFeedback.add(demoAuthor);
+        this.requestRender();
+      }
     } else if (action === "paste-profile-npub") {
       void this.#pasteProfileNpub();
     } else if (action === "confirm-profile") {
