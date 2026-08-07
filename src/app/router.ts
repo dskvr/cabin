@@ -6,6 +6,7 @@ import { decodeNaddr, naddrEncode } from "../nostr/bech32.js";
 export type AppRoute =
   | { name: "home" }
   | { name: "create" }
+  | { name: "advanced" }
   | { name: "session"; naddr: string; selected: SelectedSession }
   | { name: "display"; naddr: string; selected: SelectedSession }
   | { name: "invalid"; message: string };
@@ -15,6 +16,7 @@ export function parseRoute(hash = globalThis.location?.hash ?? "#/" ): AppRoute 
   const parts = raw.split("/").filter(Boolean);
   if (parts.length === 0) return { name: "home" };
   if (parts[0] === "create") return { name: "create" };
+  if (parts[0] === "advanced" && parts.length === 1) return { name: "advanced" };
   if ((parts[0] === "session" || parts[0] === "display") && parts[1]) {
     try {
       const decoded = decodeNaddr(parts[1]);

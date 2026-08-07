@@ -44,6 +44,23 @@ export function avatar({
   return `<img class="avatar avatar-${size}" src="${escapeAttr(src)}" alt="${escapeAttr(name)}" data-fallback-avatar="${escapeAttr(fallback)}" loading="lazy" referrerpolicy="no-referrer" />`;
 }
 
+export function profileComponent({
+  picture,
+  pubkey,
+  name,
+  size = "md",
+  className = "",
+}: {
+  picture: string | null;
+  pubkey: string;
+  name: string;
+  size?: "sm" | "md" | "lg";
+  className?: string;
+}): string {
+  const classes = ["profile", className].filter(Boolean).join(" ");
+  return `<span class="${escapeAttr(classes)}">${avatar({ picture, pubkey, name, size })}<strong class="profile-name">${escapeHtml(name)}</strong></span>`;
+}
+
 export function button(label: string, action: string, options: {
   className?: string;
   disabled?: boolean;

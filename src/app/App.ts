@@ -61,7 +61,7 @@ import {
   requestZapInvoice,
   type LnurlPayMetadata,
 } from "../nostr/zaps.js";
-import { avatar, button, escapeAttr, escapeHtml, field, identiconDataUri, textarea } from "../ui/html.js";
+import { button, escapeAttr, escapeHtml, field, identiconDataUri, profileComponent, textarea } from "../ui/html.js";
 import { navigate, parseRoute, sessionNaddr, type AppRoute } from "./router.js";
 
 interface Notice {
@@ -134,7 +134,7 @@ function hasProfileName(metadata: ProfileMetadata): boolean {
 }
 
 function feedbackQuote(text: string, pubkey: string, name: string, picture: string | null): string {
-  return `<div class="feedback-message">${avatar({ picture, pubkey, name, size: "sm" })}<blockquote class="feedback-bubble"><p>${escapeHtml(text)}</p><cite>${escapeHtml(name)}</cite></blockquote></div>`;
+  return `<div class="feedback-message">${profileComponent({ picture, pubkey, name, size: "sm" })}<blockquote class="feedback-bubble"><p>${escapeHtml(text)}</p></blockquote></div>`;
 }
 
 export class DemoDayApp {
@@ -235,7 +235,7 @@ export class DemoDayApp {
         `}
         ${this.#notice?.kind === "error" ? `<div class="notice notice-error" role="alert">${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
         <main class="${this.#route.name === "display" ? "display-main" : "page"}">${page}</main>
-        ${this.#route.name === "display" ? "" : `<footer><span>No backend. Signed state on Nostr.</span><a href="#/">Active demo days</a></footer>`}
+        ${this.#route.name === "display" ? "" : `<footer><span>No backend. Signed state on Nostr.</span><nav><a href="#/">Active demo days</a><a href="#/advanced">Advanced</a></nav></footer>`}
         ${this.#busy ? `<div class="busy-overlay" role="status"><span class="spinner"></span><strong>${escapeHtml(this.#busy)}</strong></div>` : ""}
         ${this.#renderZapModal()}
       </div>
@@ -259,6 +259,7 @@ export class DemoDayApp {
     switch (this.#route.name) {
       case "home": return this.#renderHome();
       case "create": return this.#renderCreate();
+      case "advanced": return this.#renderAdvanced();
       case "session": return this.#renderSession(this.#route.selected, false);
       case "display": return this.#renderSession(this.#route.selected, true);
       case "invalid": return `<section class="empty-state"><span class="eyebrow">Invalid route</span><h1>That session address could not be opened.</h1><p>${escapeHtml(this.#route.message)}</p><a class="button button-primary" href="#/">Return home</a></section>`;
@@ -276,8 +277,7 @@ export class DemoDayApp {
       const naddr = sessionNaddr(session.event.pubkey, session.d);
       return `<article class="session-card">
         <div class="session-card-head">
-          ${avatar({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name, size: "lg" })}
-          <div><span class="eyebrow">Active demo day</span><h2>${escapeHtml(session.state.name)}</h2><p>Captain ${escapeHtml(captain.name)}</p></div>
+          <div><span class="eyebrow">Active demo day</span><h2>${escapeHtml(session.state.name)}</h2>${profileComponent({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name, size: "lg" })}</div>
         </div>
         <div class="session-metrics">
           <div><strong>${entries.length}</strong><span>participants</span></div>
@@ -307,7 +307,7 @@ export class DemoDayApp {
     return `<section class="narrow-page">
       <a class="back-link" href="#/">← Active demo days</a>
       <span class="eyebrow">Create session</span><h1>Start a demo day</h1>
-      <div class="profile-confirm">${avatar({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name })}<div><strong>${escapeHtml(profile.name)}</strong></div></div>
+      ${profileComponent({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name, className: "profile-confirm" })}
       <form class="panel form-stack" data-form-action="create-session" data-draft-scope="create">
         ${field({ label: "Demo-day name", name: "session_name", value: this.#draft("create", "session_name"), placeholder: "SEC-08 — Week 3 Demo Day", required: true, maxlength: 140 })}
         <div class="form-divider"><span>Your demonstration</span></div>
@@ -316,7 +316,6 @@ export class DemoDayApp {
         ${field({ label: "Your demo link — optional", name: "demo_link", value: this.#draft("create", "demo_link"), type: "url", placeholder: "https://…" })}
         <div class="form-actions"><button class="button button-primary button-large" type="submit">Create demo day</button></div>
       </form>
-      ${this.#renderIdentityPanel(identity)}
     </section>`;
   }
 
@@ -326,7 +325,7 @@ export class DemoDayApp {
       const name = profileDisplayName(candidate.metadata, candidate.realNpub);
       const about = typeof candidate.metadata.about === "string" ? candidate.metadata.about.trim() : "";
       return `<div class="panel profile-preview">
-        <div class="profile-preview-head">${avatar({ picture: profileImage(candidate.metadata), pubkey: candidate.realPubkey, name, size: "lg" })}<div><span class="eyebrow">Confirm profile</span><h2>${escapeHtml(name)}</h2><code class="profile-npub" title="${escapeAttr(candidate.realNpub)}">${escapeHtml(shorten(candidate.realNpub, 8, 8))}</code></div></div>
+        <div class="profile-preview-head"><div><span class="eyebrow">Confirm profile</span>${profileComponent({ picture: profileImage(candidate.metadata), pubkey: candidate.realPubkey, name, size: "lg" })}<code class="profile-npub" title="${escapeAttr(candidate.realNpub)}">${escapeHtml(shorten(candidate.realNpub, 8, 8))}</code></div></div>
         ${about ? `<p class="profile-about">${escapeHtml(about)}</p>` : ""}
         <div class="form-actions">${button("Confirm", "confirm-profile", { className: "button button-primary" })}${button("Go back", "clear-profile-candidate", { className: "button button-secondary" })}</div>
       </div>`;
@@ -360,18 +359,19 @@ export class DemoDayApp {
   }
 
   #renderJoinForm(session: ParsedSession, identity: LocalIdentityV1): string {
-    const profile = this.#profile(identity.public_key_hex);
-    return `<section class="narrow-page">
+    const captain = this.#profile(session.event.pubkey);
+    const participant = this.#profile(identity.public_key_hex);
+    return `<section class="narrow-page join-page">
       <a class="back-link" href="#/">← Active demo days</a>
-      <span class="eyebrow">Join demo day</span><h1>${escapeHtml(session.state.name)}</h1>
-      <div class="profile-confirm">${avatar({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name })}<div><strong>${escapeHtml(profile.name)}</strong></div></div>
+      <h1>${escapeHtml(session.state.name)}</h1>
+      <section class="panel captain-profile-card"><span class="eyebrow">This week's captain</span>${profileComponent({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name, size: "sm" })}</section>
+      <h2 class="join-form-heading">Tell us about your demo ${escapeHtml(participant.name)}</h2>
       <form class="panel form-stack" data-form-action="join-session" data-draft-scope="join">
-        ${field({ label: "Demo name", name: "demo_name", value: this.#draft("join", "demo_name"), required: true, maxlength: 140 })}
-        ${textarea({ label: "Demo description", name: "demo_description", value: this.#draft("join", "demo_description"), required: true, maxlength: 4000, rows: 6 })}
-        ${field({ label: "Demo link — optional", name: "demo_link", value: this.#draft("join", "demo_link"), type: "url", placeholder: "https://…" })}
+        ${field({ label: "Project name", name: "demo_name", value: this.#draft("join", "demo_name"), required: true, maxlength: 140 })}
+        ${textarea({ label: "Project description", name: "demo_description", value: this.#draft("join", "demo_description"), required: true, maxlength: 4000, rows: 6 })}
+        ${field({ label: "Project link", name: "demo_link", value: this.#draft("join", "demo_link"), type: "url", placeholder: "https://…" })}
         <div class="form-actions"><button class="button button-primary button-large" type="submit">Join demo day</button></div>
       </form>
-      ${this.#renderIdentityPanel(identity)}
     </section>`;
   }
 
@@ -419,7 +419,6 @@ export class DemoDayApp {
       </div>
       <aside class="session-sidebar">
         ${this.#renderOwnDemoEditor(session, ownEntry)}
-        ${this.#renderIdentityPanel(identity)}
         <div class="panel protocol-note"><span class="eyebrow">Session address</span><code>${escapeHtml(session.address)}</code><p>By selecting this session, this client trusts only replacements signed by ${escapeHtml(shorten(session.event.pubkey))} at this address.</p></div>
       </aside>
     </section>`;
@@ -491,7 +490,7 @@ export class DemoDayApp {
         const profile = this.#profile(row.pubkey);
         const demoReceipts = receipts.filter((receipt) => receipt.targetEntryAddress === entry?.address);
         const sats = demoReceipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
-        return `<tr><td><span class="rank-badge">${index + 1}</span></td><td><strong>${escapeHtml(entry?.content.demo.name ?? shorten(row.pubkey))}</strong></td><td><span class="person-inline">${avatar({ picture: profile.picture, pubkey: row.pubkey, name: profile.name, size: "sm" })}${escapeHtml(profile.name)}</span></td><td class="numeric">${Math.round(row.rating)}</td><td class="numeric">${row.pairwiseVotes}</td><td class="numeric">${demoReceipts.length}</td><td class="numeric">${sats.toLocaleString()}</td></tr>`;
+        return `<tr><td><span class="rank-badge">${index + 1}</span></td><td><strong>${escapeHtml(entry?.content.demo.name ?? shorten(row.pubkey))}</strong></td><td>${profileComponent({ picture: profile.picture, pubkey: row.pubkey, name: profile.name, size: "sm" })}</td><td class="numeric">${Math.round(row.rating)}</td><td class="numeric">${row.pairwiseVotes}</td><td class="numeric">${demoReceipts.length}</td><td class="numeric">${sats.toLocaleString()}</td></tr>`;
       }).join("")}</tbody></table></div>`}
       <p class="fine-print">Elo is recalculated from the complete latest ranking dataset in presentation-pair order. Zaps do not affect ratings.</p>
     </section>`;
@@ -543,7 +542,7 @@ export class DemoDayApp {
         const projectReceipts = receipts.filter((receipt) => receipt.targetEntryAddress === entry.address);
         const sats = projectReceipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
         return `<article class="project-card ${run ? "completed" : "pending"}">
-          <div class="project-card-head">${avatar({ picture: profile.picture, pubkey: entry.author, name: profile.name })}<div><span class="eyebrow">${run ? `Presented #${(position.get(entry.author) ?? 0) + 1}` : "Not presented"}</span><h3>${escapeHtml(entry.content.demo.name)}</h3><p>${escapeHtml(profile.name)}</p></div></div>
+          <div class="project-card-head"><div><span class="eyebrow">${run ? `Presented #${(position.get(entry.author) ?? 0) + 1}` : "Not presented"}</span><h3>${escapeHtml(entry.content.demo.name)}</h3>${profileComponent({ picture: profile.picture, pubkey: entry.author, name: profile.name })}</div></div>
           <p class="project-description">${escapeHtml(entry.content.demo.description)}</p>
           <div class="project-stats"><span>⚡ ${projectReceipts.length} zaps</span><span>${sats.toLocaleString()} sats</span><span>${feedback.length} feedback</span></div>
           <div class="project-links">${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}${canZap && entry.author !== ownEntry.author ? button("⚡ Zap", "open-zap", { className: "button button-zap button-small", attrs: `data-entry-author="${escapeAttr(entry.author)}"` }) : ""}</div>
@@ -573,6 +572,15 @@ export class DemoDayApp {
       <div class="button-row">${button("Refresh imported profile", "refresh-profile", { className: "button button-quiet", disabled: !identity.real_pubkey_hex })}${button("Copy account ID", "copy-real-npub", { className: "button button-quiet", disabled: !identity.real_npub })}${button("Copy local ID", "copy-ephemeral-npub", { className: "button button-quiet" })}</div>
       <details class="secret-backup"><summary>Ephemeral key backup</summary><p>This unencrypted key controls this browser’s demo-day records. Never include it in an export.</p><code>${escapeHtml(identity.nsec)}</code>${button("Copy nsec", "copy-nsec", { className: "button button-danger button-small" })}</details>
       ${button("Reset local identity", "reset-identity", { className: "text-button danger-text" })}
+    </section>`;
+  }
+
+  #renderAdvanced(): string {
+    const identity = getOrCreateIdentity();
+    return `<section class="narrow-page">
+      <a class="back-link" href="#/">← Active demo days</a>
+      <span class="eyebrow">Settings</span><h1>Advanced</h1>
+      ${this.#renderIdentityPanel(identity)}
     </section>`;
   }
 
@@ -628,7 +636,7 @@ export class DemoDayApp {
         const receipts = snapshot.receipts.filter((receipt) => receipt.targetEntryAddress === entry.address);
         const elo = finalElo.find((row) => row.pubkey === entry.author);
         return `<article class="summary-project">
-          <div class="summary-project-title"><span class="position-number">${index + 1}</span>${avatar({ picture: profileImage(metadata), pubkey: entry.author, name, size: "lg" })}<div><span class="eyebrow">Presented by ${escapeHtml(name)}</span><h3>${escapeHtml(entry.content.demo.name)}</h3><p>${escapeHtml(entry.content.demo.description)}</p>${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}</div></div>
+          <div class="summary-project-title"><span class="position-number">${index + 1}</span><div>${profileComponent({ picture: profileImage(metadata), pubkey: entry.author, name, size: "lg" })}<h3>${escapeHtml(entry.content.demo.name)}</h3><p>${escapeHtml(entry.content.demo.description)}</p>${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}</div></div>
           <div class="project-detail-grid">${profileNamed ? "" : `<div class="account-detail"><span>Account</span><code>${escapeHtml(realNpub)}</code></div>`}<div><span>Final Elo</span><strong>${elo?.rating.toFixed(6) ?? "—"}</strong></div><div><span>Presentation</span><strong>${formatClockSeconds(Math.floor(timing.presentation_ms / 1000))}</strong></div><div><span>Questions</span><strong>${formatClockSeconds(Math.floor(timing.questions_ms / 1000))}</strong></div><div><span>Overtime</span><strong>${formatClockSeconds(Math.floor(timing.overtime_ms / 1000), "+")}</strong></div><div><span>Zaps</span><strong>${receipts.length} · ${receipts.reduce((sum, item) => sum + (item.amountSats ?? 0), 0).toLocaleString()} sats</strong></div></div>
           <div class="feedback-columns"><div><h4>What people liked</h4>${feedback.map((item) => { const reviewerMetadata = parseProfileMetadata(snapshot.profiles.get(item.reviewer.author) ?? null); return feedbackQuote(item.response.liked, item.reviewer.author, this.#snapshotProfileName(snapshot, item.reviewer.author), profileImage(reviewerMetadata)); }).join("") || `<p>No responses.</p>`}</div></div>
           ${receipts.length ? `<div class="zap-comments"><h4>Zap comments</h4>${receipts.map((receipt) => `<p><strong>${(receipt.amountSats ?? 0).toLocaleString()} sats</strong>${receipt.comment ? ` · ${escapeHtml(receipt.comment)}` : ""}</p>`).join("")}</div>` : ""}
@@ -666,7 +674,7 @@ export class DemoDayApp {
       const metadata = parseProfileMetadata(profile);
       const npub = npubEncode(realPubkey);
       const name = profileDisplayName(metadata, npub);
-      return `<article class="follow-card">${avatar({ picture: profileImage(metadata), pubkey: realPubkey, name })}<div><strong>${escapeHtml(name)}</strong>${typeof metadata.about === "string" ? `<p>${escapeHtml(metadata.about)}</p>` : ""}${hasProfileName(metadata) ? "" : `<code>${escapeHtml(npub)}</code>`}<div><a class="button button-quiet" href="nostr:${escapeAttr(npub)}">Open in Nostr</a>${button("Copy profile ID", "copy-suggestion-npub", { className: "button button-quiet", attrs: `data-npub="${escapeAttr(npub)}"` })}</div></div></article>`;
+      return `<article class="follow-card">${profileComponent({ picture: profileImage(metadata), pubkey: realPubkey, name })}<div>${typeof metadata.about === "string" ? `<p>${escapeHtml(metadata.about)}</p>` : ""}${hasProfileName(metadata) ? "" : `<code>${escapeHtml(npub)}</code>`}<div><a class="button button-quiet" href="nostr:${escapeAttr(npub)}">Open in Nostr</a>${button("Copy profile ID", "copy-suggestion-npub", { className: "button button-quiet", attrs: `data-npub="${escapeAttr(npub)}"` })}</div></div></article>`;
     }).join("")}</div><div class="form-actions">${button("Copy all profile IDs", "copy-all-suggestions", { className: "button button-secondary" })}${button("Refresh follows", "refresh-follows", { className: "button button-secondary" })}</div></section>`;
   }
 
