@@ -492,17 +492,16 @@ export class DemoDayApp {
       .filter((pubkey) => pubkey !== ownEntry.author);
     const validSet = new Set(completed);
     const sourceRanking = this.#pendingRanking ?? ownEntry.content.ranking;
-    const ranking = sourceRanking.filter((pubkey, index) => validSet.has(pubkey) && sourceRanking.indexOf(pubkey) === index);
-    const unranked = completed.filter((pubkey) => !ranking.includes(pubkey));
+    const ranked = sourceRanking.filter((pubkey, index) => validSet.has(pubkey) && sourceRanking.indexOf(pubkey) === index);
+    const ranking = [...ranked, ...completed.filter((pubkey) => !ranked.includes(pubkey))];
     const entryMap = new Map(entries.map((entry) => [entry.author, entry]));
     const item = (pubkey: string, index: number): string => {
       const entry = entryMap.get(pubkey);
-      return `<li draggable="true" data-drag-demo="${escapeAttr(pubkey)}" data-drop-index="${index}"><span class="drag-handle" title="Drag to reorder">⋮⋮</span><span class="ranking-number">${index + 1}</span><div><strong>${escapeHtml(entry?.content.demo.name ?? shorten(pubkey))}</strong><small>${escapeHtml(this.#profile(pubkey).name)}</small></div><div class="ranking-actions">${button("↑", "rank-up", { className: "icon-button", disabled: index === 0, attrs: `data-demo="${escapeAttr(pubkey)}"` })}${button("↓", "rank-down", { className: "icon-button", disabled: index === ranking.length - 1, attrs: `data-demo="${escapeAttr(pubkey)}"` })}${button("×", "rank-remove", { className: "icon-button", attrs: `data-demo="${escapeAttr(pubkey)}"` })}</div></li>`;
+      return `<li draggable="true" data-drag-demo="${escapeAttr(pubkey)}" data-drop-index="${index}"><span class="drag-handle" title="Drag to reorder">⋮⋮</span><span class="ranking-number">${index + 1}</span><div><strong>${escapeHtml(entry?.content.demo.name ?? shorten(pubkey))}</strong><small>${escapeHtml(this.#profile(pubkey).name)}</small></div><div class="ranking-actions">${button("↑", "rank-up", { className: "icon-button", disabled: index === 0, attrs: `data-demo="${escapeAttr(pubkey)}"` })}${button("↓", "rank-down", { className: "icon-button", disabled: index === ranking.length - 1, attrs: `data-demo="${escapeAttr(pubkey)}"` })}</div></li>`;
     };
     return `<section class="panel ranking-editor">
       <div class="panel-heading"><h2>Rank the demos</h2><span>Drag and drop</span></div>
       ${completed.length === 0 ? "" : `<ol class="ranking-list" data-drop-ranking>${ranking.map(item).join("")}<li class="drop-tail" data-drop-index="${ranking.length}">Drop here</li></ol>`}
-      ${unranked.length ? `<div class="unranked">${unranked.map((pubkey) => `<div class="unranked-item" draggable="true" data-drag-demo="${escapeAttr(pubkey)}"><span>${escapeHtml(entryMap.get(pubkey)?.content.demo.name ?? shorten(pubkey))}</span>${button("Add to ranking", "rank-add", { className: "button button-quiet", attrs: `data-demo="${escapeAttr(pubkey)}"` })}</div>`).join("")}</div>` : ""}
     </section>`;
   }
 
@@ -1210,8 +1209,11 @@ export class DemoDayApp {
     const session = this.#currentSession();
     const identity = loadIdentity();
     if (!session || !identity) return [];
-    const valid = new Set(session.state.presented.map((run) => run.pubkey).filter((pubkey) => pubkey !== identity.public_key_hex));
-    return [...new Set(ranking)].filter((pubkey) => valid.has(pubkey));
+    const completed = [...new Set(session.state.presented.map((run) => run.pubkey))]
+      .filter((pubkey) => pubkey !== identity.public_key_hex);
+    const valid = new Set(completed);
+    const normalized = [...new Set(ranking)].filter((pubkey) => valid.has(pubkey));
+    return [...normalized, ...completed.filter((pubkey) => !normalized.includes(pubkey))];
   }
 
   #setRanking(ranking: string[]): void {
@@ -1611,22 +1613,6 @@ export class DemoDayApp {
     } else if (action === "rank-up" || action === "rank-down") {
       const pubkey = actionElement.dataset.demo;
       if (pubkey) this.#setRanking(this.#rankingWithMove(pubkey, action === "rank-up" ? -1 : 1));
-    } else if (action === "rank-remove") {
-      const pubkey = actionElement.dataset.demo;
-      if (pubkey) {
-        const session = this.#currentSession();
-        const identity = loadIdentity();
-        const ownEntry = session && identity ? this.#repository.entryForParticipant(session.address, identity.public_key_hex) : null;
-        this.#setRanking(this.#normalizedRanking(this.#pendingRanking ?? ownEntry?.content.ranking ?? []).filter((item) => item !== pubkey));
-      }
-    } else if (action === "rank-add") {
-      const pubkey = actionElement.dataset.demo;
-      if (pubkey) {
-        const session = this.#currentSession();
-        const identity = loadIdentity();
-        const ownEntry = session && identity ? this.#repository.entryForParticipant(session.address, identity.public_key_hex) : null;
-        this.#setRanking([...this.#normalizedRanking(this.#pendingRanking ?? ownEntry?.content.ranking ?? []), pubkey]);
-      }
     } else if (action === "open-zap") {
       const entryAuthor = actionElement.dataset.entryAuthor;
       if (entryAuthor) {
