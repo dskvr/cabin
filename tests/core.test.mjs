@@ -437,7 +437,7 @@ test("AI-ready export includes normalized and raw data and never secret material
     sessionAddress: address,
     sessionD,
     entry: entryState(captainRealPubkey, sourceCaptain.id, "Captain Demo", [participantPubkey], {
-      [participantPubkey]: { liked: "Clear", learned: "Event replacement" },
+      [participantPubkey]: { liked: "Clear" },
     }),
     profile: { display_name: "Captain" },
     secretKeyHex: captainSecret,

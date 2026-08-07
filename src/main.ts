@@ -1,6 +1,7 @@
 import { DemoDayApp } from "./app/App.js";
 import { NostrRepository } from "./nostr/repository.js";
 import { InMemoryTestTransport, WebSocketNostrTransport } from "./nostr/transport.js";
+import "./site-data.js";
 
 const root = document.querySelector<HTMLElement>("#app");
 

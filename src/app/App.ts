@@ -129,6 +129,14 @@ function profileImage(metadata: ProfileMetadata): string | null {
   return typeof metadata.picture === "string" && metadata.picture.trim() ? metadata.picture : null;
 }
 
+function hasProfileName(metadata: ProfileMetadata): boolean {
+  return [metadata.display_name, metadata.name].some((value) => typeof value === "string" && value.trim());
+}
+
+function feedbackQuote(text: string, pubkey: string, name: string, picture: string | null): string {
+  return `<div class="feedback-message">${avatar({ picture, pubkey, name, size: "sm" })}<blockquote class="feedback-bubble"><p>${escapeHtml(text)}</p><cite>${escapeHtml(name)}</cite></blockquote></div>`;
+}
+
 export class DemoDayApp {
   readonly #root: HTMLElement;
   readonly #repository: NostrRepository;
@@ -137,6 +145,7 @@ export class DemoDayApp {
   #busy: string | null = null;
   #profileCandidate: ProfileCandidate | null = null;
   #profileLookupFailed = false;
+  #profileLookupNpub: string | null = null;
   #drafts = new Map<string, string>();
   #requestedProfiles = new Set<string>();
   #sessionUnsubscribe: (() => void) | null = null;
@@ -151,6 +160,7 @@ export class DemoDayApp {
   #pendingRanking: string[] | null = null;
   #timerInterval: number | null = null;
   #renderQueued = false;
+  #renderDeferred = false;
   #receiptCache = new Map<string, { key: string; receipts: ZapReceipt[] }>();
   #receiptLoading = new Set<string>();
 
@@ -169,6 +179,7 @@ export class DemoDayApp {
     this.#root.addEventListener("click", this.#onClick);
     this.#root.addEventListener("input", this.#onInput);
     this.#root.addEventListener("change", this.#onInput);
+    this.#root.addEventListener("focusout", this.#onFocusOut);
     this.#root.addEventListener("dragstart", this.#onDragStart);
     this.#root.addEventListener("dragover", this.#onDragOver);
     this.#root.addEventListener("drop", this.#onDrop);
@@ -179,6 +190,12 @@ export class DemoDayApp {
   }
 
   requestRender(): void {
+    const active = this.#root.ownerDocument.activeElement;
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) {
+      this.#renderDeferred = true;
+      return;
+    }
+    this.#renderDeferred = false;
     if (this.#renderQueued) return;
     this.#renderQueued = true;
     queueMicrotask(() => {
@@ -188,6 +205,15 @@ export class DemoDayApp {
   }
 
   render(): void {
+    const active = this.#root.ownerDocument.activeElement;
+    const focusedControl = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement
+      ? {
+          name: active.name,
+          scope: active.dataset.draftScope ?? active.closest<HTMLFormElement>("form")?.dataset.draftScope,
+          selectionStart: active instanceof HTMLSelectElement ? null : active.selectionStart,
+          selectionEnd: active instanceof HTMLSelectElement ? null : active.selectionEnd,
+        }
+      : null;
     const page = this.#renderRoute();
     const identity = loadIdentity();
     const connected = this.#repository.connectedRelays().length;
@@ -203,17 +229,28 @@ export class DemoDayApp {
             <div class="status-cluster" aria-label="Connection status">
               <span class="relay-status ${connected > 0 ? "online" : "offline"}"><i></i>${connected}/${DEFAULT_RELAYS.length} relays</span>
               ${pending ? `<span class="pending-status">${pending} pending</span>` : ""}
-              ${identity ? `<span class="identity-chip" title="Ephemeral identity">${escapeHtml(shorten(identity.npub, 10, 6))}</span>` : ""}
+              ${identity ? `<span class="identity-chip" title="Current profile">${escapeHtml(this.#profile(identity.public_key_hex).name)}</span>` : ""}
             </div>
           </header>
         `}
-        ${this.#notice ? `<div class="notice notice-${this.#notice.kind}" role="status">${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
+        ${this.#notice?.kind === "error" ? `<div class="notice notice-error" role="alert">${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
         <main class="${this.#route.name === "display" ? "display-main" : "page"}">${page}</main>
         ${this.#route.name === "display" ? "" : `<footer><span>No backend. Signed state on Nostr.</span><a href="#/">Active demo days</a></footer>`}
         ${this.#busy ? `<div class="busy-overlay" role="status"><span class="spinner"></span><strong>${escapeHtml(this.#busy)}</strong></div>` : ""}
         ${this.#renderZapModal()}
       </div>
     `;
+    if (focusedControl?.name) {
+      const replacement = [...this.#root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input, textarea, select")]
+        .find((control) => control.name === focusedControl.name
+          && (control.dataset.draftScope ?? control.closest<HTMLFormElement>("form")?.dataset.draftScope) === focusedControl.scope);
+      if (replacement) {
+        replacement.focus({ preventScroll: true });
+        if (!(replacement instanceof HTMLSelectElement) && focusedControl.selectionStart !== null && focusedControl.selectionEnd !== null) {
+          replacement.setSelectionRange(focusedControl.selectionStart, focusedControl.selectionEnd);
+        }
+      }
+    }
     this.#updateTimers();
     this.#ensureRouteData();
   }
@@ -264,13 +301,13 @@ export class DemoDayApp {
   #renderCreate(): string {
     const identity = getOrCreateIdentity();
     if (!this.#identityReady(identity)) {
-      return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><span class="eyebrow">Captain onboarding</span><h1>Start a demo day</h1>${this.#renderProfileImport(identity)}</section>`;
+      return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><h1>Who are you?</h1>${this.#renderProfileImport(identity)}</section>`;
     }
     const profile = this.#profile(identity.public_key_hex);
     return `<section class="narrow-page">
       <a class="back-link" href="#/">← Active demo days</a>
       <span class="eyebrow">Create session</span><h1>Start a demo day</h1>
-      <div class="profile-confirm">${avatar({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name })}<div><strong>${escapeHtml(profile.name)}</strong><span>${escapeHtml(identity.real_npub ?? "")}</span></div>${button("Change identity", "reset-identity", { className: "button button-quiet" })}</div>
+      <div class="profile-confirm">${avatar({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name })}<div><strong>${escapeHtml(profile.name)}</strong></div></div>
       <form class="panel form-stack" data-form-action="create-session" data-draft-scope="create">
         ${field({ label: "Demo-day name", name: "session_name", value: this.#draft("create", "session_name"), placeholder: "SEC-08 — Week 3 Demo Day", required: true, maxlength: 140 })}
         <div class="form-divider"><span>Your demonstration</span></div>
@@ -287,23 +324,19 @@ export class DemoDayApp {
     if (this.#profileCandidate) {
       const candidate = this.#profileCandidate;
       const name = profileDisplayName(candidate.metadata, candidate.realNpub);
+      const about = typeof candidate.metadata.about === "string" ? candidate.metadata.about.trim() : "";
       return `<div class="panel profile-preview">
-        <div class="profile-preview-head">${avatar({ picture: profileImage(candidate.metadata), pubkey: candidate.realPubkey, name, size: "lg" })}<div><span class="eyebrow">Profile found</span><h2>${escapeHtml(name)}</h2><p>${escapeHtml(candidate.realNpub)}</p></div></div>
-        ${typeof candidate.metadata.about === "string" ? `<p class="profile-about">${escapeHtml(candidate.metadata.about)}</p>` : ""}
-        <dl class="metadata-list"><div><dt>Source relay</dt><dd>${escapeHtml(candidate.relay)}</dd></div><div><dt>Source event</dt><dd>${escapeHtml(shorten(candidate.event.id))}</dd></div></dl>
-        <p class="callout">The complete profile content and all tags will be copied exactly under this browser’s ephemeral pubkey. A copied NIP-05 identifier is shown as imported data, not as verification of the ephemeral key.</p>
-        <div class="form-actions">${button("Use this profile", "accept-profile", { className: "button button-primary" })}${button("Search again", "clear-profile-candidate", { className: "button button-secondary" })}</div>
+        <div class="profile-preview-head">${avatar({ picture: profileImage(candidate.metadata), pubkey: candidate.realPubkey, name, size: "lg" })}<div><span class="eyebrow">Confirm profile</span><h2>${escapeHtml(name)}</h2><code class="profile-npub" title="${escapeAttr(candidate.realNpub)}">${escapeHtml(shorten(candidate.realNpub, 8, 8))}</code></div></div>
+        ${about ? `<p class="profile-about">${escapeHtml(about)}</p>` : ""}
+        <div class="form-actions">${button("Confirm", "confirm-profile", { className: "button button-primary" })}${button("Go back", "clear-profile-candidate", { className: "button button-secondary" })}</div>
       </div>`;
     }
 
     return `<div class="panel form-stack">
-      <div class="key-created"><span>Ephemeral identity ready</span><code>${escapeHtml(identity.npub)}</code></div>
       <form data-form-action="lookup-profile" data-draft-scope="profile">
-        ${field({ label: "Your usual Nostr npub", name: "real_npub", value: this.#draft("profile", "real_npub", identity.real_npub ?? ""), placeholder: "npub1…", required: true, autocomplete: "off" })}
-        <button class="button button-primary" type="submit">Import profile</button>
+        <div class="input-action-row">${field({ label: "Your usual Nostr npub", name: "real_npub", value: this.#draft("profile", "real_npub", identity.real_npub ?? ""), placeholder: "npub1…", required: true, autocomplete: "off" })}${button('<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h6m-5-2h4a2 2 0 0 1 2 2v1h2a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2V5a2 2 0 0 1 2-2Zm2 7v7m-3-3 3 3 3-3"/></svg>', "paste-profile-npub", { className: "input-paste-button", attrs: 'aria-label="Paste npub from clipboard" title="Paste npub from clipboard"' })}</div>
       </form>
       ${this.#profileLookupFailed ? `<div class="relay-fallback"><h3>Profile not found on the default relays</h3><p>Paste a relay where your usual Nostr profile can be found.</p><form data-form-action="lookup-profile-relay" data-draft-scope="profile-relay">${field({ label: "Profile relay", name: "relay", value: this.#draft("profile-relay", "relay"), placeholder: "wss://relay.example.com", required: true })}<button class="button button-secondary" type="submit">Search relay</button></form></div>` : ""}
-      <p class="fine-print">The app never asks for your normal account’s private key. The generated ephemeral key remains unencrypted in this browser’s local storage.</p>
     </div>`;
   }
 
@@ -320,7 +353,7 @@ export class DemoDayApp {
     const identity = getOrCreateIdentity();
     const ownEntry = this.#repository.entryForParticipant(session.address, identity.public_key_hex);
     if (!this.#identityReady(identity)) {
-      return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><span class="eyebrow">Join ${escapeHtml(session.state.name)}</span><h1>Import your Nostr profile</h1>${this.#renderProfileImport(identity)}</section>`;
+      return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><h1>Who are you?</h1>${this.#renderProfileImport(identity)}</section>`;
     }
     if (!ownEntry) return this.#renderJoinForm(session, identity);
     return this.#renderParticipantSession(session, entries, ownEntry, identity);
@@ -331,7 +364,7 @@ export class DemoDayApp {
     return `<section class="narrow-page">
       <a class="back-link" href="#/">← Active demo days</a>
       <span class="eyebrow">Join demo day</span><h1>${escapeHtml(session.state.name)}</h1>
-      <div class="profile-confirm">${avatar({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name })}<div><strong>${escapeHtml(profile.name)}</strong><span>${escapeHtml(identity.real_npub ?? "")}</span></div></div>
+      <div class="profile-confirm">${avatar({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name })}<div><strong>${escapeHtml(profile.name)}</strong></div></div>
       <form class="panel form-stack" data-form-action="join-session" data-draft-scope="join">
         ${field({ label: "Demo name", name: "demo_name", value: this.#draft("join", "demo_name"), required: true, maxlength: 140 })}
         ${textarea({ label: "Demo description", name: "demo_description", value: this.#draft("join", "demo_description"), required: true, maxlength: 4000, rows: 6 })}
@@ -502,9 +535,9 @@ export class DemoDayApp {
         const run = session.state.presented.find((item) => item.pubkey === entry.author) ?? null;
         const feedback = entries.flatMap((reviewer) => {
           const response = reviewer.content.feedback[entry.author];
-          return response && (response.liked.trim() || response.learned.trim()) ? [{ reviewer, response }] : [];
+          return response?.liked.trim() ? [{ reviewer, response }] : [];
         });
-        const ownFeedback = ownEntry.content.feedback[entry.author] ?? { liked: "", learned: "" };
+        const ownFeedback = ownEntry.content.feedback[entry.author] ?? { liked: "" };
         const metadata = parseProfileMetadata(this.#repository.getProfile(entry.author));
         const canZap = lightningUrlFromProfile(metadata) !== null;
         const projectReceipts = receipts.filter((receipt) => receipt.targetEntryAddress === entry.address);
@@ -514,8 +547,8 @@ export class DemoDayApp {
           <p class="project-description">${escapeHtml(entry.content.demo.description)}</p>
           <div class="project-stats"><span>⚡ ${projectReceipts.length} zaps</span><span>${sats.toLocaleString()} sats</span><span>${feedback.length} feedback</span></div>
           <div class="project-links">${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}${canZap && entry.author !== ownEntry.author ? button("⚡ Zap", "open-zap", { className: "button button-zap button-small", attrs: `data-entry-author="${escapeAttr(entry.author)}"` }) : ""}</div>
-          ${run && entry.author !== ownEntry.author ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}"><h4>Your feedback</h4>${textarea({ label: "What did you like?", name: "liked", value: this.#draft(`feedback-${entry.author}`, "liked", ownFeedback.liked), maxlength: 280, rows: 3 })}${textarea({ label: "What did you learn?", name: "learned", value: this.#draft(`feedback-${entry.author}`, "learned", ownFeedback.learned), maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit">Save feedback</button></form>` : ""}
-          ${feedback.length ? `<details class="feedback-results"><summary>Read feedback (${feedback.length})</summary><div><h4>What people liked</h4>${feedback.filter((item) => item.response.liked.trim()).map((item) => `<blockquote>${escapeHtml(item.response.liked)}<cite>${escapeHtml(this.#profile(item.reviewer.author).name)}</cite></blockquote>`).join("") || `<p>Nothing yet.</p>`}<h4>What people learned</h4>${feedback.filter((item) => item.response.learned.trim()).map((item) => `<blockquote>${escapeHtml(item.response.learned)}<cite>${escapeHtml(this.#profile(item.reviewer.author).name)}</cite></blockquote>`).join("") || `<p>Nothing yet.</p>`}</div></details>` : ""}
+          ${run && entry.author !== ownEntry.author ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}"><h4>Your feedback</h4>${textarea({ label: "What did you like?", name: "liked", value: this.#draft(`feedback-${entry.author}`, "liked", ownFeedback.liked), maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit">Save feedback</button></form>` : ""}
+          ${feedback.length ? `<details class="feedback-results"><summary>Read feedback (${feedback.length})</summary><div><h4>What people liked</h4>${feedback.map((item) => { const reviewer = this.#profile(item.reviewer.author); return feedbackQuote(item.response.liked, item.reviewer.author, reviewer.name, reviewer.picture); }).join("")}</div></details>` : ""}
         </article>`;
       }).join("")}</div>
     </section>`;
@@ -536,8 +569,8 @@ export class DemoDayApp {
   #renderIdentityPanel(identity: LocalIdentityV1): string {
     const profile = this.#profile(identity.public_key_hex);
     return `<section class="panel identity-panel"><div class="panel-heading"><div><span class="eyebrow">Local identity</span><h2>${escapeHtml(profile.name)}</h2></div></div>
-      <dl class="metadata-list"><div><dt>Real account</dt><dd>${escapeHtml(identity.real_npub ?? "Not imported")}</dd></div><div><dt>Ephemeral npub</dt><dd>${escapeHtml(identity.npub)}</dd></div><div><dt>Source relay</dt><dd>${escapeHtml(identity.source_profile_relay ?? "—")}</dd></div></dl>
-      <div class="button-row">${button("Refresh imported profile", "refresh-profile", { className: "button button-quiet", disabled: !identity.real_pubkey_hex })}${button("Copy real npub", "copy-real-npub", { className: "button button-quiet", disabled: !identity.real_npub })}${button("Copy ephemeral npub", "copy-ephemeral-npub", { className: "button button-quiet" })}</div>
+      <dl class="metadata-list"><div><dt>Source relay</dt><dd>${escapeHtml(identity.source_profile_relay ?? "—")}</dd></div></dl>
+      <div class="button-row">${button("Refresh imported profile", "refresh-profile", { className: "button button-quiet", disabled: !identity.real_pubkey_hex })}${button("Copy account ID", "copy-real-npub", { className: "button button-quiet", disabled: !identity.real_npub })}${button("Copy local ID", "copy-ephemeral-npub", { className: "button button-quiet" })}</div>
       <details class="secret-backup"><summary>Ephemeral key backup</summary><p>This unencrypted key controls this browser’s demo-day records. Never include it in an export.</p><code>${escapeHtml(identity.nsec)}</code>${button("Copy nsec", "copy-nsec", { className: "button button-danger button-small" })}</details>
       ${button("Reset local identity", "reset-identity", { className: "text-button danger-text" })}
     </section>`;
@@ -584,18 +617,20 @@ export class DemoDayApp {
         if (!entry) return "";
         const profile = snapshot.profiles.get(entry.author) ?? null;
         const metadata = parseProfileMetadata(profile);
-        const name = profileDisplayName(metadata, npubEncode(entry.content.real_pubkey));
+        const realNpub = npubEncode(entry.content.real_pubkey);
+        const profileNamed = hasProfileName(metadata);
+        const name = profileDisplayName(metadata, realNpub);
         const timing = splitPresentationTime(run.finished_at_ms - run.started_at_ms);
         const feedback = entries.flatMap((reviewer) => {
           const response = reviewer.content.feedback[entry.author];
-          return response && (response.liked.trim() || response.learned.trim()) ? [{ reviewer, response }] : [];
+          return response?.liked.trim() ? [{ reviewer, response }] : [];
         });
         const receipts = snapshot.receipts.filter((receipt) => receipt.targetEntryAddress === entry.address);
         const elo = finalElo.find((row) => row.pubkey === entry.author);
         return `<article class="summary-project">
           <div class="summary-project-title"><span class="position-number">${index + 1}</span>${avatar({ picture: profileImage(metadata), pubkey: entry.author, name, size: "lg" })}<div><span class="eyebrow">Presented by ${escapeHtml(name)}</span><h3>${escapeHtml(entry.content.demo.name)}</h3><p>${escapeHtml(entry.content.demo.description)}</p>${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}</div></div>
-          <div class="project-detail-grid"><div><span>Real account</span><code>${escapeHtml(npubEncode(entry.content.real_pubkey))}</code></div><div><span>Final Elo</span><strong>${elo?.rating.toFixed(6) ?? "—"}</strong></div><div><span>Presentation</span><strong>${formatClockSeconds(Math.floor(timing.presentation_ms / 1000))}</strong></div><div><span>Questions</span><strong>${formatClockSeconds(Math.floor(timing.questions_ms / 1000))}</strong></div><div><span>Overtime</span><strong>${formatClockSeconds(Math.floor(timing.overtime_ms / 1000), "+")}</strong></div><div><span>Zaps</span><strong>${receipts.length} · ${receipts.reduce((sum, item) => sum + (item.amountSats ?? 0), 0).toLocaleString()} sats</strong></div></div>
-          <div class="feedback-columns"><div><h4>What people liked</h4>${feedback.filter((item) => item.response.liked.trim()).map((item) => `<blockquote>${escapeHtml(item.response.liked)}<cite>${escapeHtml(this.#snapshotProfileName(snapshot, item.reviewer.author))}</cite></blockquote>`).join("") || `<p>No responses.</p>`}</div><div><h4>What people learned</h4>${feedback.filter((item) => item.response.learned.trim()).map((item) => `<blockquote>${escapeHtml(item.response.learned)}<cite>${escapeHtml(this.#snapshotProfileName(snapshot, item.reviewer.author))}</cite></blockquote>`).join("") || `<p>No responses.</p>`}</div></div>
+          <div class="project-detail-grid">${profileNamed ? "" : `<div class="account-detail"><span>Account</span><code>${escapeHtml(realNpub)}</code></div>`}<div><span>Final Elo</span><strong>${elo?.rating.toFixed(6) ?? "—"}</strong></div><div><span>Presentation</span><strong>${formatClockSeconds(Math.floor(timing.presentation_ms / 1000))}</strong></div><div><span>Questions</span><strong>${formatClockSeconds(Math.floor(timing.questions_ms / 1000))}</strong></div><div><span>Overtime</span><strong>${formatClockSeconds(Math.floor(timing.overtime_ms / 1000), "+")}</strong></div><div><span>Zaps</span><strong>${receipts.length} · ${receipts.reduce((sum, item) => sum + (item.amountSats ?? 0), 0).toLocaleString()} sats</strong></div></div>
+          <div class="feedback-columns"><div><h4>What people liked</h4>${feedback.map((item) => { const reviewerMetadata = parseProfileMetadata(snapshot.profiles.get(item.reviewer.author) ?? null); return feedbackQuote(item.response.liked, item.reviewer.author, this.#snapshotProfileName(snapshot, item.reviewer.author), profileImage(reviewerMetadata)); }).join("") || `<p>No responses.</p>`}</div></div>
           ${receipts.length ? `<div class="zap-comments"><h4>Zap comments</h4>${receipts.map((receipt) => `<p><strong>${(receipt.amountSats ?? 0).toLocaleString()} sats</strong>${receipt.comment ? ` · ${escapeHtml(receipt.comment)}` : ""}</p>`).join("")}</div>` : ""}
         </article>`;
       }).join("")}</div></section>
@@ -631,8 +666,8 @@ export class DemoDayApp {
       const metadata = parseProfileMetadata(profile);
       const npub = npubEncode(realPubkey);
       const name = profileDisplayName(metadata, npub);
-      return `<article class="follow-card">${avatar({ picture: profileImage(metadata), pubkey: realPubkey, name })}<div><strong>${escapeHtml(name)}</strong>${typeof metadata.about === "string" ? `<p>${escapeHtml(metadata.about)}</p>` : ""}<code>${escapeHtml(npub)}</code><div><a class="button button-quiet" href="nostr:${escapeAttr(npub)}">Open in Nostr</a>${button("Copy npub", "copy-suggestion-npub", { className: "button button-quiet", attrs: `data-npub="${escapeAttr(npub)}"` })}</div></div></article>`;
-    }).join("")}</div><div class="form-actions">${button("Copy all remaining npubs", "copy-all-suggestions", { className: "button button-secondary" })}${button("Refresh follows", "refresh-follows", { className: "button button-secondary" })}</div></section>`;
+      return `<article class="follow-card">${avatar({ picture: profileImage(metadata), pubkey: realPubkey, name })}<div><strong>${escapeHtml(name)}</strong>${typeof metadata.about === "string" ? `<p>${escapeHtml(metadata.about)}</p>` : ""}${hasProfileName(metadata) ? "" : `<code>${escapeHtml(npub)}</code>`}<div><a class="button button-quiet" href="nostr:${escapeAttr(npub)}">Open in Nostr</a>${button("Copy profile ID", "copy-suggestion-npub", { className: "button button-quiet", attrs: `data-npub="${escapeAttr(npub)}"` })}</div></div></article>`;
+    }).join("")}</div><div class="form-actions">${button("Copy all profile IDs", "copy-all-suggestions", { className: "button button-secondary" })}${button("Refresh follows", "refresh-follows", { className: "button button-secondary" })}</div></section>`;
   }
 
   #renderZapModal(): string {
@@ -641,7 +676,7 @@ export class DemoDayApp {
     const routeSession = this.#currentSession();
     const entry = routeSession ? this.#repository.entryForParticipant(routeSession.address, modal.entryAuthor) : null;
     const profile = entry ? this.#profile(entry.author) : null;
-    const body = modal.status === "form" ? `<form data-form-action="submit-zap" data-draft-scope="zap"><p>Payment goes to <strong>${escapeHtml(profile?.name ?? "the presenter")}</strong>’s real Nostr account and targets this demo entry.</p>${field({ label: "Amount (sats)", name: "amount", value: this.#draft("zap", "amount", modal.amountSats), type: "number", required: true })}${textarea({ label: "Comment — optional", name: "comment", value: this.#draft("zap", "comment", modal.comment), maxlength: 280, rows: 3 })}<button class="button button-zap button-large" type="submit">⚡ Request invoice</button></form>`
+    const body = modal.status === "form" ? `<form data-form-action="submit-zap" data-draft-scope="zap"><p>Payment goes to <strong>${escapeHtml(profile?.name ?? "the presenter")}</strong>’s real Nostr account and targets this demo entry.</p>${field({ label: "Amount (sats)", name: "amount", value: this.#draft("zap", "amount", modal.amountSats), type: "number", min: 1, step: 1, required: true })}${textarea({ label: "Comment — optional", name: "comment", value: this.#draft("zap", "comment", modal.comment), maxlength: 280, rows: 3 })}<button class="button button-zap button-large" type="submit">⚡ Request invoice</button></form>`
       : modal.status === "loading" ? `<div class="modal-state"><span class="spinner large"></span><h3>Preparing Nostr zap…</h3><p>Checking LNURL support and requesting a signed invoice.</p></div>`
       : modal.status === "invoice" ? `<div class="modal-state"><span class="zap-icon">⚡</span><h3>Invoice ready</h3><p>Pay with a Lightning wallet. The receipt will appear after the recipient’s service publishes it.</p><textarea class="invoice" readonly>${escapeHtml(modal.invoice ?? "")}</textarea><div class="form-actions"><a class="button button-zap" href="lightning:${escapeAttr(modal.invoice ?? "")}">Open wallet</a>${button("Copy invoice", "copy-invoice", { className: "button button-secondary" })}</div></div>`
       : modal.status === "paid" ? `<div class="modal-state"><span class="zap-icon">✓</span><h3>Payment sent</h3><p>Waiting for the signed kind-9735 receipt on the demo-day relays.</p></div>`
@@ -928,9 +963,7 @@ export class DemoDayApp {
     this.#profileLookupFailed = false;
   }
 
-  async #acceptProfile(): Promise<void> {
-    const candidate = this.#profileCandidate;
-    if (!candidate) throw new Error("No profile is selected");
+  async #importProfile(candidate: ProfileCandidate): Promise<void> {
     const identity = getOrCreateIdentity();
     const imported = await importProfile({
       repository: this.#repository,
@@ -1221,9 +1254,10 @@ export class DemoDayApp {
     if (!modal || !session || !identity) throw new Error("Zap context is unavailable");
     const entry = this.#repository.entryForParticipant(session.address, modal.entryAuthor);
     if (!entry) throw new Error("Presenter entry is unavailable");
-    const amountSats = Number.parseInt(String(formData.get("amount") ?? ""), 10);
+    const rawAmount = String(formData.get("amount") ?? "").trim();
+    const amountSats = Number(rawAmount);
     const comment = clampText(String(formData.get("comment") ?? ""), 280);
-    if (!Number.isSafeInteger(amountSats) || amountSats <= 0) throw new Error("Enter a positive whole-satoshi amount");
+    if (!/^[1-9]\d*$/.test(rawAmount) || !Number.isSafeInteger(amountSats)) throw new Error("Enter a positive whole-satoshi amount");
     this.#zapModal = { ...modal, amountSats: String(amountSats), comment, status: "loading", error: null };
     this.requestRender();
 
@@ -1315,6 +1349,49 @@ export class DemoDayApp {
     this.requestRender();
   }
 
+  async #pasteProfileNpub(): Promise<void> {
+    const input = this.#root.querySelector<HTMLInputElement>('form[data-draft-scope="profile"] input[name="real_npub"]');
+    let npub = "";
+    let clipboardRead = false;
+    if (navigator.clipboard?.readText) {
+      try {
+        npub = (await navigator.clipboard.readText()).trim();
+        clipboardRead = true;
+      } catch {
+        // Insecure origins and denied permissions may still support legacy paste.
+      }
+    }
+    if (!clipboardRead && input) {
+      input.focus({ preventScroll: true });
+      input.select();
+      if (document.execCommand("paste")) npub = input.value.trim();
+    }
+
+    if (npub) {
+      this.#drafts.set("profile:real_npub", npub);
+      if (input) input.value = npub;
+      if (this.#maybeImportProfileNpub(npub)) return;
+      this.#notice = { kind: "success", text: "npub pasted." };
+      this.requestRender();
+      queueMicrotask(() => {
+        const replacement = this.#root.querySelector<HTMLInputElement>('form[data-draft-scope="profile"] input[name="real_npub"]');
+        replacement?.focus({ preventScroll: true });
+        replacement?.setSelectionRange(replacement.value.length, replacement.value.length);
+      });
+      return;
+    }
+
+    this.#notice = clipboardRead
+      ? { kind: "error", text: "Clipboard is empty." }
+      : { kind: "info", text: "Clipboard access is blocked here. Press Ctrl+V or ⌘V to paste." };
+    this.requestRender();
+    queueMicrotask(() => {
+      const replacement = this.#root.querySelector<HTMLInputElement>('form[data-draft-scope="profile"] input[name="real_npub"]');
+      replacement?.focus({ preventScroll: true });
+      replacement?.select();
+    });
+  }
+
   readonly #onRouteChanged = (): void => {
     this.#activateRoute();
     this.requestRender();
@@ -1327,6 +1404,34 @@ export class DemoDayApp {
     const scope = target.dataset.draftScope ?? target.closest<HTMLFormElement>("form")?.dataset.draftScope;
     if (!scope) return;
     this.#drafts.set(`${scope}:${target.name}`, target.value);
+    if (scope === "profile" && target.name === "real_npub") this.#maybeImportProfileNpub(target.value);
+  };
+
+  #maybeImportProfileNpub(value: string): boolean {
+    let normalized: string;
+    try {
+      normalized = npubEncode(decodeNpub(value.trim()));
+    } catch {
+      return false;
+    }
+    if (this.#profileLookupNpub === normalized || loadIdentity()?.real_npub === normalized) return true;
+    this.#profileLookupNpub = normalized;
+    const active = this.#root.ownerDocument.activeElement;
+    if (active instanceof HTMLInputElement && active.name === "real_npub") active.blur();
+    void this.#withBusy("Importing profile", () => this.#lookupProfile(normalized)).finally(() => {
+      if (loadIdentity()?.real_npub !== normalized) this.#profileLookupNpub = null;
+    });
+    return true;
+  }
+
+  readonly #onFocusOut = (): void => {
+    globalThis.setTimeout(() => {
+      if (!this.#renderDeferred) return;
+      const active = this.#root.ownerDocument.activeElement;
+      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return;
+      this.#renderDeferred = false;
+      this.requestRender();
+    }, 0);
   };
 
   readonly #onSubmit = (event: SubmitEvent): void => {
@@ -1335,11 +1440,13 @@ export class DemoDayApp {
     const action = form.dataset.formAction;
     if (!action) return;
     event.preventDefault();
+    const active = this.#root.ownerDocument.activeElement;
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) active.blur();
     const data = new FormData(form);
 
     if (action === "lookup-profile") {
       const npub = String(data.get("real_npub") ?? "");
-      void this.#withBusy("Searching for your profile", () => this.#lookupProfile(npub));
+      this.#maybeImportProfileNpub(npub);
       return;
     }
     if (action === "lookup-profile-relay") {
@@ -1374,13 +1481,12 @@ export class DemoDayApp {
       const demoAuthor = form.dataset.demoAuthor;
       if (!demoAuthor) return;
       const liked = clampText(String(data.get("liked") ?? ""), 280);
-      const learned = clampText(String(data.get("learned") ?? ""), 280);
       void this.#withBusy("Saving feedback", async () => {
         const session = this.#currentSession();
         if (!session?.state.presented.some((run) => run.pubkey === demoAuthor)) throw new Error("Feedback is available only after the demo is marked DONE");
         await this.#publishOwnEntry((content) => ({
           ...content,
-          feedback: { ...content.feedback, [demoAuthor]: { liked, learned } },
+          feedback: { ...content.feedback, [demoAuthor]: { liked } },
           updated_at_ms: Date.now(),
         }));
         this.#clearDraftScope(`feedback-${demoAuthor}`);
@@ -1432,12 +1538,16 @@ export class DemoDayApp {
     if (action === "dismiss-notice") {
       this.#notice = null;
       this.requestRender();
+    } else if (action === "paste-profile-npub") {
+      void this.#pasteProfileNpub();
+    } else if (action === "confirm-profile") {
+      const candidate = this.#profileCandidate;
+      if (candidate) void this.#withBusy("Importing profile", () => this.#importProfile(candidate));
     } else if (action === "clear-profile-candidate") {
       this.#profileCandidate = null;
+      this.#profileLookupNpub = null;
       this.#profileLookupFailed = false;
       this.requestRender();
-    } else if (action === "accept-profile") {
-      void this.#withBusy("Copying complete profile", () => this.#acceptProfile());
     } else if (action === "reset-identity") {
       if (globalThis.confirm("Reset the local ephemeral identity? Existing demo-day records will remain on relays, but this browser will lose the signing key.")) {
         resetIdentity();
@@ -1451,10 +1561,10 @@ export class DemoDayApp {
       void this.#withBusy("Refreshing imported profile", () => this.#refreshImportedProfile());
     } else if (action === "copy-real-npub") {
       const value = loadIdentity()?.real_npub;
-      if (value) void this.#copyText(value, "Real npub copied.");
+      if (value) void this.#copyText(value, "Account ID copied.");
     } else if (action === "copy-ephemeral-npub") {
       const value = loadIdentity()?.npub;
-      if (value) void this.#copyText(value, "Ephemeral npub copied.");
+      if (value) void this.#copyText(value, "Local ID copied.");
     } else if (action === "copy-nsec") {
       const value = loadIdentity()?.nsec;
       if (value) void this.#copyText(value, "Ephemeral nsec copied. Keep it private.");
@@ -1548,7 +1658,7 @@ export class DemoDayApp {
       if (session && snapshot) void this.#loadFollows(session, snapshot);
     } else if (action === "copy-suggestion-npub") {
       const npub = actionElement.dataset.npub;
-      if (npub) void this.#copyText(npub, "npub copied.");
+      if (npub) void this.#copyText(npub, "Profile ID copied.");
     } else if (action === "copy-all-suggestions") {
       const values = this.#followState?.suggestions.map(npubEncode) ?? [];
       if (values.length) void this.#copyText(values.join("\n"), "Remaining npubs copied.");

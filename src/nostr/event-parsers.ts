@@ -83,12 +83,14 @@ function parseEntryContent(content: string): ParticipantEntryV1 | null {
   if (!isStringArray(value.ranking, isValidHexPubkey)) return null;
   if (new Set(value.ranking).size !== value.ranking.length) return null;
   if (!isRecord(value.feedback)) return null;
+  const feedbackEntries: ParticipantEntryV1["feedback"] = {};
   for (const [pubkey, feedback] of Object.entries(value.feedback)) {
     if (!isValidHexPubkey(pubkey) || !isRecord(feedback)) return null;
-    if (typeof feedback.liked !== "string" || typeof feedback.learned !== "string") return null;
+    if (typeof feedback.liked !== "string") return null;
+    feedbackEntries[pubkey] = { liked: feedback.liked };
   }
   if (!isSafeMs(value.updated_at_ms)) return null;
-  return value as unknown as ParticipantEntryV1;
+  return { ...value, feedback: feedbackEntries } as unknown as ParticipantEntryV1;
 }
 
 export function parseParticipantEntryEvent(event: NostrEvent, selectedSessionAddress?: string): ParsedEntry | null {

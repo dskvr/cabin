@@ -57,7 +57,6 @@ export interface DemoDaySessionV1 {
 
 export interface DemoFeedback {
   liked: string;
-  learned: string;
 }
 
 export interface ParticipantEntryV1 {

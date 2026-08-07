@@ -683,6 +683,47 @@ code,
   box-shadow: 0 0 0 4px rgba(239, 109, 63, 0.12);
 }
 
+.input-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.input-paste-button {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  color: var(--accent-dark);
+  background: var(--surface-strong);
+  cursor: pointer;
+}
+
+.input-paste-button:hover,
+.input-paste-button:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.input-paste-button:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 4px rgba(239, 109, 63, 0.12);
+}
+
+.input-paste-button svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .form-divider {
   height: 1px;
   margin: 4px 0;
@@ -696,6 +737,20 @@ code,
 
 .profile-preview-head {
   align-items: center;
+}
+
+.profile-preview-head > div {
+  flex: 1;
+  overflow: hidden;
+}
+
+.profile-npub {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: clamp(0.62rem, 2.8vw, 0.78rem);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .profile-confirm {
@@ -976,7 +1031,7 @@ code,
 
 .feedback-columns {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 18px;
 }
 
@@ -1161,11 +1216,21 @@ tr:last-child td {
 }
 
 .summary-project {
+  min-width: 0;
   padding: 23px;
+}
+
+.summary-projects {
+  grid-template-columns: 1fr;
 }
 
 .summary-project-title {
   align-items: center;
+  justify-content: flex-start;
+}
+
+.summary-project-title > div {
+  flex: 1;
 }
 
 .summary-project h3 {
@@ -1182,6 +1247,85 @@ tr:last-child td {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+}
+
+.project-detail-grid > div {
+  min-width: 0;
+}
+
+.project-detail-grid span,
+.project-detail-grid strong,
+.project-detail-grid code {
+  display: block;
+}
+
+.project-detail-grid span {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.project-detail-grid code {
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.project-detail-grid .account-detail {
+  grid-column: 1 / -1;
+}
+
+.feedback-message {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.feedback-message .avatar {
+  margin-bottom: 3px;
+}
+
+.feedback-results .feedback-bubble,
+.feedback-columns .feedback-bubble {
+  position: relative;
+  width: fit-content;
+  max-width: min(680px, calc(100% - 44px));
+  margin: 0;
+  padding: 12px 15px;
+  border: 0;
+  border-radius: 17px 17px 17px 5px;
+  background: var(--paper-deep);
+  line-height: 1.45;
+}
+
+.feedback-results .feedback-bubble::before,
+.feedback-columns .feedback-bubble::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  background: var(--paper-deep);
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+
+.feedback-bubble p {
+  position: relative;
+  margin: 0 0 5px;
+}
+
+.feedback-bubble cite {
+  position: relative;
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 700;
 }
 
 .project-section {

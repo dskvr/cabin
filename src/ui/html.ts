@@ -61,6 +61,8 @@ export function field({
   placeholder = "",
   required = false,
   maxlength,
+  min,
+  step,
   help = "",
   autocomplete = "off",
 }: {
@@ -71,10 +73,12 @@ export function field({
   placeholder?: string;
   required?: boolean;
   maxlength?: number;
+  min?: number;
+  step?: number;
   help?: string;
   autocomplete?: string;
 }): string {
-  return `<label class="field"><span>${escapeHtml(label)}</span><input name="${escapeAttr(name)}" type="${escapeAttr(type)}" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder)}" ${required ? "required" : ""} ${maxlength ? `maxlength="${maxlength}"` : ""} autocomplete="${escapeAttr(autocomplete)}" />${help ? `<small>${escapeHtml(help)}</small>` : ""}</label>`;
+  return `<label class="field"><span>${escapeHtml(label)}</span><input name="${escapeAttr(name)}" type="${escapeAttr(type)}" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder)}" ${required ? "required" : ""} ${maxlength ? `maxlength="${maxlength}"` : ""} ${min != null ? `min="${min}"` : ""} ${step != null ? `step="${step}"` : ""} autocomplete="${escapeAttr(autocomplete)}" />${help ? `<small>${escapeHtml(help)}</small>` : ""}</label>`;
 }
 
 export function textarea({

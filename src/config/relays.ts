@@ -13,7 +13,6 @@ export const ELO_SCALE = 400;
 
 export const DEFAULT_RELAYS = Object.freeze([
   "wss://relay.nostr.com",
-  "wss://relay.damus.io",
   "wss://nos.lol",
   "wss://relay.primal.net",
   "wss://nostr.bitcoiner.social",

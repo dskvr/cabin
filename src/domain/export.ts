@@ -102,7 +102,7 @@ export function buildExport({
     const presenterMetadata = parseProfileMetadata(presenterProfile);
     const feedback = entries.flatMap((reviewer) => {
       const response = reviewer.content.feedback[entry.author];
-      if (!response || (!response.liked.trim() && !response.learned.trim())) return [];
+      if (!response?.liked.trim()) return [];
       const reviewerProfile = profiles.get(reviewer.author) ?? null;
       const reviewerMetadata = parseProfileMetadata(reviewerProfile);
       return [{
@@ -110,7 +110,6 @@ export function buildExport({
         author_real_pubkey: reviewer.content.real_pubkey,
         author_name: profileDisplayName(reviewerMetadata, npubEncode(reviewer.content.real_pubkey)),
         liked: response.liked,
-        learned: response.learned,
       }];
     });
     const receipts = zapReceipts.filter((receipt) => receipt.targetEntryAddress === entry.address);

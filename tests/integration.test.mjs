@@ -172,9 +172,9 @@ test("multi-client captain, participant, display-state, ranking, closure, and ex
     [captain.ephemeralPubkey, beta.ephemeralPubkey],
   ];
   const feedback = [
-    { [beta.ephemeralPubkey]: { liked: "Strong relay demo", learned: "How replacement works" } },
-    { [gamma.ephemeralPubkey]: { liked: "Clear timer", learned: "How clients derive elapsed time" } },
-    { [captain.ephemeralPubkey]: { liked: "Useful architecture", learned: "Why the captain is event authority" } },
+    { [beta.ephemeralPubkey]: { liked: "Strong relay demo" } },
+    { [gamma.ephemeralPubkey]: { liked: "Clear timer" } },
+    { [captain.ephemeralPubkey]: { liked: "Useful architecture" } },
   ];
   const latestEntries = [];
   for (let index = 0; index < people.length; index += 1) {
