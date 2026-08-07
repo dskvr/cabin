@@ -426,8 +426,35 @@ code,
 .session-card {
   display: flex;
   flex-direction: column;
+  gap: 20px;
   min-height: 300px;
   padding: 24px;
+}
+
+.session-card-open {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.session-card-closed {
+  border-color: var(--red);
+  background: var(--red-soft);
+}
+
+.session-status {
+  margin: 0;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+
+.session-status-open {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.session-status-closed {
+  color: var(--red);
+  background: var(--red-soft);
 }
 
 .session-card-head {
@@ -436,8 +463,16 @@ code,
   gap: 15px;
 }
 
+.session-card-head > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+}
+
 .session-card h2 {
-  margin-bottom: 5px;
+  margin: 0;
   font-size: 1.42rem;
 }
 
@@ -462,7 +497,7 @@ code,
 
 .session-metrics {
   grid-template-columns: 1fr;
-  margin: 28px 0 20px;
+  margin: 0;
 }
 
 .session-metrics div,

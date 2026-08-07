@@ -341,9 +341,9 @@ export class DemoDayApp {
       const captain = this.#profile(session.event.pubkey);
       const naddr = sessionNaddr(session.event.pubkey, session.d);
       const closed = session.state.closed_at_ms !== null;
-      return `<article class="session-card">
+      return `<article class="session-card ${closed ? "session-card-closed" : "session-card-open"}">
         <div class="session-card-head">
-          <div><span class="eyebrow">${closed ? "Closed demo day" : "Active demo day"}</span><h2>${escapeHtml(session.state.name)}</h2>${profileComponent({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name, size: "lg" })}</div>
+          <div><span class="eyebrow session-status ${closed ? "session-status-closed" : "session-status-open"}">${closed ? "Closed demo day" : "Open demo day"}</span><h2>${escapeHtml(session.state.name)}</h2>${profileComponent({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name, size: "lg" })}</div>
         </div>
         <div class="session-metrics">
           <div><strong>${entries.length}</strong><span>participants</span></div>
