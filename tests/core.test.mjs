@@ -6,6 +6,7 @@ import {
   finalizeEvent,
   generateSecretKeyHex,
   getPublicKey,
+  sha256,
   verifyEvent,
 } from "../dist/assets/nostr/crypto.js";
 import {
@@ -55,6 +56,22 @@ import {
 
 const key = (number) => number.toString(16).padStart(64, "0");
 const sessionD = "sedd-session:0123456789abcdef0123456789abcdef";
+
+test("SHA-256 works when SubtleCrypto is unavailable on an insecure LAN origin", async () => {
+  const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  Object.defineProperty(globalThis, "crypto", {
+    configurable: true,
+    value: { getRandomValues: crypto.getRandomValues.bind(crypto) },
+  });
+  try {
+    assert.equal(
+      Buffer.from(await sha256("abc")).toString("hex"),
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
+  } finally {
+    if (cryptoDescriptor) Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
+  }
+});
 
 function sessionState(overrides = {}) {
   return {
