@@ -253,8 +253,12 @@ code,
 
 .identity-chip {
   max-width: 180px;
+}
+
+.identity-chip .profile-name {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .notice {
@@ -1369,15 +1373,32 @@ tr:last-child td {
   color: rgba(255,255,255,.72);
 }
 
+.summary-hero .back-link {
+  display: flex;
+  width: max-content;
+  color: var(--accent);
+}
+
+.summary-hero .eyebrow {
+  color: var(--accent);
+}
+
+.summary-hero .button-primary {
+  color: var(--ink);
+  border-color: #fff;
+  background: #fff;
+}
+
 .summary-metrics {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-top: 28px;
-  border-color: rgba(255,255,255,.2);
-  background: rgba(255,255,255,.2);
+  border-color: var(--line);
+  background: var(--line);
 }
 
 .summary-metrics div {
-  background: rgba(255,255,255,.08);
+  color: var(--ink);
+  background: var(--surface);
 }
 
 .summary-metrics strong {
@@ -1385,7 +1406,7 @@ tr:last-child td {
 }
 
 .summary-metrics span {
-  color: rgba(255,255,255,.6);
+  color: var(--muted);
 }
 
 .summary-page > * + * {
@@ -1856,8 +1877,15 @@ footer a {
   }
 
   .brand small,
-  .identity-chip,
   .pending-status {
+    display: none;
+  }
+
+  .identity-chip {
+    padding: 4px;
+  }
+
+  .identity-chip .profile-name {
     display: none;
   }
 

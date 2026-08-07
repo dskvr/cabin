@@ -14,8 +14,8 @@ export function parseProfileMetadata(event: NostrEvent | null | undefined): Prof
 }
 
 export function profileDisplayName(metadata: ProfileMetadata, fallbackNpub: string): string {
-  const displayName = typeof metadata.display_name === "string" ? metadata.display_name.trim() : "";
-  const name = typeof metadata.name === "string" ? metadata.name.trim() : "";
+  const displayName = typeof metadata.display_name === "string" ? metadata.display_name.replace(/\s+/g, " ").trim() : "";
+  const name = typeof metadata.name === "string" ? metadata.name.replace(/\s+/g, " ").trim() : "";
   return displayName || name || shorten(fallbackNpub, 12, 8);
 }
 

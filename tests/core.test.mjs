@@ -49,7 +49,7 @@ import {
   zapTotals,
 } from "../dist/assets/nostr/zaps.js";
 import { getTag } from "../dist/assets/domain/utils.js";
-import { canonicalProfileSearchEvents } from "../dist/assets/nostr/profiles.js";
+import { canonicalProfileSearchEvents, profileDisplayName } from "../dist/assets/nostr/profiles.js";
 import {
   APP_KIND,
   DEFAULT_RELAYS,
@@ -71,6 +71,17 @@ test("profile search collapses copied metadata onto original oldest profile", ()
   const copyTwo = profile(key(5), 300, "05".repeat(32));
 
   assert.deepEqual(canonicalProfileSearchEvents([copyTwo, copyOne, original]), [original]);
+});
+
+test("profile display names render on one line", () => {
+  assert.equal(
+    profileDisplayName({ display_name: "  Alice\n  Example  ", name: "ignored" }, "npub1fallback"),
+    "Alice Example",
+  );
+  assert.equal(
+    profileDisplayName({ name: "Alice\tExample" }, "npub1fallback"),
+    "Alice Example",
+  );
 });
 
 test("SHA-256 works when SubtleCrypto is unavailable on an insecure LAN origin", async () => {

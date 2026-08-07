@@ -230,8 +230,8 @@ export class DemoDayApp {
 
   start(): void {
     this.#repository.start();
-    this.#repository.onChange(() => this.requestRender());
-    this.#repository.transport.onConnectionChange(() => this.requestRender());
+    this.#repository.onChange(() => this.#requestBackgroundRender());
+    this.#repository.transport.onConnectionChange(() => this.#requestBackgroundRender());
     globalThis.addEventListener("hashchange", this.#onRouteChanged);
     globalThis.addEventListener("sedd-identity-changed", () => this.requestRender());
     this.#root.addEventListener("submit", this.#onSubmit);
@@ -263,6 +263,11 @@ export class DemoDayApp {
     });
   }
 
+  #requestBackgroundRender(): void {
+    if (this.#profileCandidate) return;
+    this.requestRender();
+  }
+
   render(): void {
     const active = this.#root.ownerDocument.activeElement;
     const focusedControl = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement
@@ -275,6 +280,7 @@ export class DemoDayApp {
       : null;
     const page = this.#renderRoute();
     const identity = loadIdentity();
+    const currentProfile = identity ? this.#profile(identity.public_key_hex) : null;
     const connected = this.#repository.connectedRelays().length;
     const pending = this.#repository.pendingCount();
     this.#root.innerHTML = `
@@ -288,7 +294,7 @@ export class DemoDayApp {
             <div class="status-cluster" aria-label="Connection status">
               <span class="relay-status ${connected > 0 ? "online" : "offline"}"><i></i>${connected}/${DEFAULT_RELAYS.length} relays</span>
               ${pending ? `<span class="pending-status">${pending} pending</span>` : ""}
-              ${identity ? `<span class="identity-chip" title="Current profile">${escapeHtml(this.#profile(identity.public_key_hex).name)}</span>` : ""}
+              ${identity && currentProfile ? profileComponent({ picture: currentProfile.picture, pubkey: identity.public_key_hex, name: currentProfile.name, size: "sm", className: "identity-chip" }) : ""}
             </div>
           </header>
         `}
@@ -706,7 +712,7 @@ export class DemoDayApp {
     const profile = this.#profile(identity.public_key_hex);
     return `<section class="panel identity-panel"><div class="panel-heading"><div><span class="eyebrow">Local identity</span><h2>${escapeHtml(profile.name)}</h2></div></div>
       <dl class="metadata-list"><div><dt>Source relay</dt><dd>${escapeHtml(identity.source_profile_relay ?? "—")}</dd></div></dl>
-      <div class="button-row">${button("Refresh imported profile", "refresh-profile", { className: "button button-quiet", disabled: !identity.real_pubkey_hex })}${button("Copy account ID", "copy-real-npub", { className: "button button-quiet", disabled: !identity.real_npub })}${button("Copy local ID", "copy-ephemeral-npub", { className: "button button-quiet" })}</div>
+      <div class="button-row">${button("Refresh imported profile", "refresh-profile", { className: "button button-quiet", disabled: !identity.real_pubkey_hex })}${button("Copy account npub", "copy-real-npub", { className: "button button-quiet", disabled: !identity.real_npub })}${button("Copy local npub", "copy-ephemeral-npub", { className: "button button-quiet" })}</div>
       <details class="secret-backup"><summary>Ephemeral key backup</summary><p>This unencrypted key controls this browser’s demo-day records. Never include it in an export.</p><code>${escapeHtml(identity.nsec)}</code>${button("Copy nsec", "copy-nsec", { className: "button button-danger button-small" })}</details>
       ${button("Reset local identity", "reset-identity", { className: "text-button danger-text" })}
     </section>`;
@@ -765,16 +771,14 @@ export class DemoDayApp {
         const realNpub = npubEncode(entry.content.real_pubkey);
         const profileNamed = hasProfileName(metadata);
         const name = profileDisplayName(metadata, realNpub);
-        const timing = splitPresentationTime(run.finished_at_ms - run.started_at_ms);
         const feedback = entries.flatMap((reviewer) => {
           const response = reviewer.content.feedback[entry.author];
           return response?.liked.trim() ? [{ reviewer, response }] : [];
         });
         const receipts = snapshot.receipts.filter((receipt) => receipt.targetEntryAddress === entry.address);
-        const elo = finalElo.find((row) => row.pubkey === entry.author);
         return `<article class="summary-project">
           <div class="summary-project-title"><span class="position-number">${index + 1}</span><div>${profileComponent({ picture: profileImage(metadata), pubkey: entry.author, name, size: "lg" })}<h3>${escapeHtml(entry.content.demo.name)}</h3><p>${escapeHtml(entry.content.demo.description)}</p>${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}</div></div>
-          <div class="project-detail-grid">${profileNamed ? "" : `<div class="account-detail"><span>Account</span><code>${escapeHtml(realNpub)}</code></div>`}<div><span>Final Elo</span><strong>${elo?.rating.toFixed(6) ?? "—"}</strong></div><div><span>Presentation</span><strong>${formatClockSeconds(Math.floor(timing.presentation_ms / 1000))}</strong></div><div><span>Questions</span><strong>${formatClockSeconds(Math.floor(timing.questions_ms / 1000))}</strong></div><div><span>Overtime</span><strong>${formatClockSeconds(Math.floor(timing.overtime_ms / 1000), "+")}</strong></div><div><span>Zaps</span><strong>${receipts.length} · ${receipts.reduce((sum, item) => sum + (item.amountSats ?? 0), 0).toLocaleString()} sats</strong></div></div>
+          ${profileNamed ? "" : `<div class="account-detail"><span>Account</span><code>${escapeHtml(realNpub)}</code></div>`}
           <div class="feedback-columns"><div><h4>What people liked</h4>${feedback.map((item) => { const reviewerMetadata = parseProfileMetadata(snapshot.profiles.get(item.reviewer.author) ?? null); return feedbackQuote(item.response.liked, item.reviewer.author, this.#snapshotProfileName(snapshot, item.reviewer.author), profileImage(reviewerMetadata)); }).join("") || `<p>No responses.</p>`}</div><div class="zap-comments"><h4>Zaps</h4>${groupZapReceipts(receipts).map((group) => { const sender = group[0]?.senderPubkey; const senderProfile = sender ? profileView(snapshot.profiles.get(sender) ?? null, sender) : null; return zapMessage(group, senderProfile); }).join("") || `<p>No zaps.</p>`}</div></div>
         </article>`;
       }).join("")}</div></section>
@@ -810,8 +814,8 @@ export class DemoDayApp {
       const metadata = parseProfileMetadata(profile);
       const npub = npubEncode(realPubkey);
       const name = profileDisplayName(metadata, npub);
-      return `<article class="follow-card">${profileComponent({ picture: profileImage(metadata), pubkey: realPubkey, name })}<div>${typeof metadata.about === "string" ? `<p>${escapeHtml(metadata.about)}</p>` : ""}${hasProfileName(metadata) ? "" : `<code>${escapeHtml(npub)}</code>`}<div><a class="button button-quiet" href="nostr:${escapeAttr(npub)}">Open in Nostr</a>${button("Copy profile ID", "copy-suggestion-npub", { className: "button button-quiet", attrs: `data-npub="${escapeAttr(npub)}"` })}</div></div></article>`;
-    }).join("")}</div><div class="form-actions">${button("Copy all profile IDs", "copy-all-suggestions", { className: "button button-secondary" })}${button("Refresh follows", "refresh-follows", { className: "button button-secondary" })}</div></section>`;
+      return `<article class="follow-card">${profileComponent({ picture: profileImage(metadata), pubkey: realPubkey, name })}<div>${typeof metadata.about === "string" ? `<p class="profile-about">${escapeHtml(metadata.about.trim())}</p>` : ""}${hasProfileName(metadata) ? "" : `<code>${escapeHtml(npub)}</code>`}<div><a class="button button-quiet" href="nostr:${escapeAttr(npub)}">Open in Nostr</a>${button("Copy npub", "copy-suggestion-npub", { className: "button button-quiet", attrs: `data-npub="${escapeAttr(npub)}"` })}</div></div></article>`;
+    }).join("")}</div><div class="form-actions">${button("Copy all npubs", "copy-all-suggestions", { className: "button button-secondary" })}${button("Refresh follows", "refresh-follows", { className: "button button-secondary" })}</div></section>`;
   }
 
   #renderZapModal(): string {
@@ -1832,10 +1836,10 @@ export class DemoDayApp {
       void this.#withBusy("Refreshing imported profile", () => this.#refreshImportedProfile());
     } else if (action === "copy-real-npub") {
       const value = loadIdentity()?.real_npub;
-      if (value) void this.#copyText(value, "Account ID copied.");
+      if (value) void this.#copyText(value, "Account npub copied.");
     } else if (action === "copy-ephemeral-npub") {
       const value = loadIdentity()?.npub;
-      if (value) void this.#copyText(value, "Local ID copied.");
+      if (value) void this.#copyText(value, "Local npub copied.");
     } else if (action === "copy-nsec") {
       const value = loadIdentity()?.nsec;
       if (value) void this.#copyText(value, "Ephemeral nsec copied. Keep it private.");
@@ -1914,7 +1918,7 @@ export class DemoDayApp {
       if (session && snapshot) void this.#loadFollows(session, snapshot);
     } else if (action === "copy-suggestion-npub") {
       const npub = actionElement.dataset.npub;
-      if (npub) void this.#copyText(npub, "Profile ID copied.");
+      if (npub) void this.#copyText(npub, "npub copied.");
     } else if (action === "copy-all-suggestions") {
       const values = this.#followState?.suggestions.map(npubEncode) ?? [];
       if (values.length) void this.#copyText(values.join("\n"), "Remaining npubs copied.");
