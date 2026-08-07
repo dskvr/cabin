@@ -1404,6 +1404,22 @@ tr:last-child td {
   margin-bottom: 3px;
 }
 
+.zap-message {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 14px;
+}
+
+.zap-message p {
+  margin: 0;
+}
+
+.zap-anonymous {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
 .feedback-results .feedback-bubble,
 .feedback-columns .feedback-bubble {
   position: relative;
