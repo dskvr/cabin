@@ -1,0 +1,11 @@
+{
+    "schema_version": 2,
+    "commit": "",
+    "indexed_at": "2026-08-07T07:48:56Z",
+    "project": "Users-gareth-git-nostr-demoday",
+    "nodes": 619,
+    "edges": 1940,
+    "original_size": 2818048,
+    "compressed_size": 493699,
+    "compression_level": 9
+}

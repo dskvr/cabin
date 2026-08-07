@@ -1,0 +1,22 @@
+{
+  "name": "sovereign-engineering-demo-day-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Static, backend-free Nostr demo-day tracker.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/serve.mjs --build",
+    "preview": "node scripts/serve.mjs",
+    "start": "node scripts/serve.mjs",
+    "test": "node scripts/test.mjs",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "verify": "npm run check && npm test"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "devDependencies": {
+    "typescript": "5.8.3"
+  }
+}

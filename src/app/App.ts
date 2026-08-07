@@ -1,0 +1,1616 @@
+import {
+  APP_KIND,
+  DEFAULT_RELAYS,
+  FOLLOW_LIST_KIND,
+  PRESENTATION_MS,
+  QUESTIONS_MS,
+} from "../config/relays.js";
+import { calculateElo, rankElo } from "../domain/elo.js";
+import { buildExport, downloadJson, exportFilename } from "../domain/export.js";
+import { calculateFollowSuggestions } from "../domain/follows.js";
+import { formatClockSeconds, formatTimer, splitPresentationTime } from "../domain/timer.js";
+import type {
+  DemoDaySessionV1,
+  LocalIdentityV1,
+  NostrEvent,
+  ParsedEntry,
+  ParsedSession,
+  ParticipantEntryV1,
+  ProfileMetadata,
+  RelayEvent,
+  SelectedSession,
+  ZapReceipt,
+} from "../domain/types.js";
+import {
+  clampText,
+  compareReplaceable,
+  dedupe,
+  formatDateTime,
+  getTag,
+  nextCreatedAt,
+  normalizeOptionalUrl,
+  shorten,
+  validRelayUrl,
+} from "../domain/utils.js";
+import { decodeNpub, npubEncode } from "../nostr/bech32.js";
+import {
+  buildEntryEvent,
+  buildSessionEvent,
+  createPresenterZapRequest,
+} from "../nostr/event-builders.js";
+import { parseParticipantEntryEvent } from "../nostr/event-parsers.js";
+import {
+  addAccountRelay,
+  attachImportedProfile,
+  getOrCreateIdentity,
+  loadIdentity,
+  resetIdentity,
+} from "../nostr/identity.js";
+import {
+  findRealProfile,
+  importProfile,
+  parseProfileMetadata,
+  profileDisplayName,
+  profileView,
+} from "../nostr/profiles.js";
+import type { NostrRepository } from "../nostr/repository.js";
+import {
+  collectZapReceipts,
+  fetchLnurlPayMetadata,
+  lightningUrlFromProfile,
+  requestZapInvoice,
+  type LnurlPayMetadata,
+} from "../nostr/zaps.js";
+import { avatar, button, escapeAttr, escapeHtml, field, identiconDataUri, textarea } from "../ui/html.js";
+import { navigate, parseRoute, sessionNaddr, type AppRoute } from "./router.js";
+
+interface Notice {
+  kind: "success" | "error" | "info";
+  text: string;
+}
+
+interface ProfileCandidate {
+  realNpub: string;
+  realPubkey: string;
+  event: NostrEvent;
+  relay: string;
+  metadata: ProfileMetadata;
+  addedRelay: boolean;
+}
+
+interface ClosedSnapshot {
+  eventId: string;
+  entries: ParsedEntry[];
+  profiles: Map<string, NostrEvent>;
+  receipts: ZapReceipt[];
+  missingIds: string[];
+}
+
+interface FollowState {
+  sessionAddress: string;
+  status: "loading" | "ready" | "missing" | "error";
+  followEvent: NostrEvent | null;
+  suggestions: string[];
+  message: string | null;
+}
+
+interface ZapModalState {
+  entryAuthor: string;
+  amountSats: string;
+  comment: string;
+  status: "form" | "loading" | "invoice" | "paid" | "error";
+  invoice: string | null;
+  error: string | null;
+  metadata: LnurlPayMetadata | null;
+}
+
+interface WindowWithWebLN extends Window {
+  webln?: {
+    enable(): Promise<void>;
+    sendPayment(invoice: string): Promise<unknown>;
+  };
+}
+
+function randomHex(bytesLength: number): string {
+  return [...crypto.getRandomValues(new Uint8Array(bytesLength))]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function chooseLatest(items: RelayEvent[]): RelayEvent | null {
+  let selected: RelayEvent | null = null;
+  for (const item of items) {
+    if (!selected || compareReplaceable(item.event, selected.event)) selected = item;
+  }
+  return selected;
+}
+
+function profileImage(metadata: ProfileMetadata): string | null {
+  return typeof metadata.picture === "string" && metadata.picture.trim() ? metadata.picture : null;
+}
+
+export class DemoDayApp {
+  readonly #root: HTMLElement;
+  readonly #repository: NostrRepository;
+  #route: AppRoute = parseRoute();
+  #notice: Notice | null = null;
+  #busy: string | null = null;
+  #profileCandidate: ProfileCandidate | null = null;
+  #profileLookupFailed = false;
+  #drafts = new Map<string, string>();
+  #requestedProfiles = new Set<string>();
+  #sessionUnsubscribe: (() => void) | null = null;
+  #zapUnsubscribe: (() => void) | null = null;
+  #zapSubscriptionKey = "";
+  #closedSnapshots = new Map<string, ClosedSnapshot>();
+  #loadingSnapshots = new Set<string>();
+  #followState: FollowState | null = null;
+  #zapModal: ZapModalState | null = null;
+  #draggedDemo: string | null = null;
+  #rankingPublishTimer: number | null = null;
+  #pendingRanking: string[] | null = null;
+  #timerInterval: number | null = null;
+  #renderQueued = false;
+  #receiptCache = new Map<string, { key: string; receipts: ZapReceipt[] }>();
+  #receiptLoading = new Set<string>();
+
+  constructor(root: HTMLElement, repository: NostrRepository) {
+    this.#root = root;
+    this.#repository = repository;
+  }
+
+  start(): void {
+    this.#repository.start();
+    this.#repository.onChange(() => this.requestRender());
+    this.#repository.transport.onConnectionChange(() => this.requestRender());
+    globalThis.addEventListener("hashchange", this.#onRouteChanged);
+    globalThis.addEventListener("sedd-identity-changed", () => this.requestRender());
+    this.#root.addEventListener("submit", this.#onSubmit);
+    this.#root.addEventListener("click", this.#onClick);
+    this.#root.addEventListener("input", this.#onInput);
+    this.#root.addEventListener("change", this.#onInput);
+    this.#root.addEventListener("dragstart", this.#onDragStart);
+    this.#root.addEventListener("dragover", this.#onDragOver);
+    this.#root.addEventListener("drop", this.#onDrop);
+    this.#root.addEventListener("error", this.#onImageError, true);
+    this.#activateRoute();
+    this.#timerInterval = globalThis.setInterval(() => this.#updateTimers(), 250);
+    this.render();
+  }
+
+  requestRender(): void {
+    if (this.#renderQueued) return;
+    this.#renderQueued = true;
+    queueMicrotask(() => {
+      this.#renderQueued = false;
+      this.render();
+    });
+  }
+
+  render(): void {
+    const page = this.#renderRoute();
+    const identity = loadIdentity();
+    const connected = this.#repository.connectedRelays().length;
+    const pending = this.#repository.pendingCount();
+    this.#root.innerHTML = `
+      <div class="app-shell ${this.#route.name === "display" ? "display-shell" : ""}">
+        ${this.#route.name === "display" ? "" : `
+          <header class="topbar">
+            <a class="brand" href="#/" aria-label="Sovereign Engineering Demo Day home">
+              <span class="brand-mark">SE</span>
+              <span><strong>Sovereign Engineering</strong><small>Demo Day Tracker</small></span>
+            </a>
+            <div class="status-cluster" aria-label="Connection status">
+              <span class="relay-status ${connected > 0 ? "online" : "offline"}"><i></i>${connected}/${DEFAULT_RELAYS.length} relays</span>
+              ${pending ? `<span class="pending-status">${pending} pending</span>` : ""}
+              ${identity ? `<span class="identity-chip" title="Ephemeral identity">${escapeHtml(shorten(identity.npub, 10, 6))}</span>` : ""}
+            </div>
+          </header>
+        `}
+        ${this.#notice ? `<div class="notice notice-${this.#notice.kind}" role="status">${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
+        <main class="${this.#route.name === "display" ? "display-main" : "page"}">${page}</main>
+        ${this.#route.name === "display" ? "" : `<footer><span>No backend. Signed state on Nostr.</span><a href="#/">Active demo days</a></footer>`}
+        ${this.#busy ? `<div class="busy-overlay" role="status"><span class="spinner"></span><strong>${escapeHtml(this.#busy)}</strong></div>` : ""}
+        ${this.#renderZapModal()}
+      </div>
+    `;
+    this.#updateTimers();
+    this.#ensureRouteData();
+  }
+
+  #renderRoute(): string {
+    switch (this.#route.name) {
+      case "home": return this.#renderHome();
+      case "create": return this.#renderCreate();
+      case "session": return this.#renderSession(this.#route.selected, false);
+      case "display": return this.#renderSession(this.#route.selected, true);
+      case "invalid": return `<section class="empty-state"><span class="eyebrow">Invalid route</span><h1>That session address could not be opened.</h1><p>${escapeHtml(this.#route.message)}</p><a class="button button-primary" href="#/">Return home</a></section>`;
+    }
+  }
+
+  #renderHome(): string {
+    const sessions = this.#repository.activeSessions();
+    const cards = sessions.map((session) => {
+      const entries = this.#repository.entriesForSession(session.address);
+      const captain = this.#profile(session.event.pubkey);
+      const currentEntry = session.state.current_demo_pubkey
+        ? entries.find((entry) => entry.author === session.state.current_demo_pubkey) ?? null
+        : null;
+      const naddr = sessionNaddr(session.event.pubkey, session.d);
+      return `<article class="session-card">
+        <div class="session-card-head">
+          ${avatar({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name, size: "lg" })}
+          <div><span class="eyebrow">Active demo day</span><h2>${escapeHtml(session.state.name)}</h2><p>Captain ${escapeHtml(captain.name)}</p></div>
+        </div>
+        <div class="session-metrics">
+          <div><strong>${entries.length}</strong><span>participants</span></div>
+          <div><strong>${escapeHtml(currentEntry?.content.demo.name ?? "Between demos")}</strong><span>current project</span></div>
+        </div>
+        <div class="card-actions">
+          <a class="button button-primary" href="#/session/${escapeAttr(naddr)}">Join</a>
+          <a class="button button-secondary" href="#/display/${escapeAttr(naddr)}">Display</a>
+        </div>
+      </article>`;
+    }).join("");
+
+    return `<section class="hero">
+      <div><span class="eyebrow">Live on Nostr</span><h1>Run a demo day without a server.</h1><p>Join, present, rank, give feedback, zap presenters, and leave with a verifiable session record.</p></div>
+      <a class="button button-primary button-large" href="#/create">Start a demo day</a>
+    </section>
+    <section class="section-heading"><div><span class="eyebrow">Discovery</span><h2>Active demo days</h2></div><span>${sessions.length} found</span></section>
+    <section class="card-grid">${cards || `<div class="empty-state compact"><h3>No active demo days found</h3><p>The app is listening on the ten fixed relays. You can start the first session.</p></div>`}</section>`;
+  }
+
+  #renderCreate(): string {
+    const identity = getOrCreateIdentity();
+    if (!this.#identityReady(identity)) {
+      return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><span class="eyebrow">Captain onboarding</span><h1>Start a demo day</h1>${this.#renderProfileImport(identity)}</section>`;
+    }
+    const profile = this.#profile(identity.public_key_hex);
+    return `<section class="narrow-page">
+      <a class="back-link" href="#/">← Active demo days</a>
+      <span class="eyebrow">Create session</span><h1>Start a demo day</h1>
+      <div class="profile-confirm">${avatar({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name })}<div><strong>${escapeHtml(profile.name)}</strong><span>${escapeHtml(identity.real_npub ?? "")}</span></div>${button("Change identity", "reset-identity", { className: "button button-quiet" })}</div>
+      <form class="panel form-stack" data-form-action="create-session" data-draft-scope="create">
+        ${field({ label: "Demo-day name", name: "session_name", value: this.#draft("create", "session_name"), placeholder: "SEC-08 — Week 3 Demo Day", required: true, maxlength: 140 })}
+        <div class="form-divider"><span>Your demonstration</span></div>
+        ${field({ label: "Your demo name", name: "demo_name", value: this.#draft("create", "demo_name"), required: true, maxlength: 140 })}
+        ${textarea({ label: "Your demo description", name: "demo_description", value: this.#draft("create", "demo_description"), required: true, maxlength: 4000, rows: 6 })}
+        ${field({ label: "Your demo link — optional", name: "demo_link", value: this.#draft("create", "demo_link"), type: "url", placeholder: "https://…" })}
+        <div class="form-actions"><button class="button button-primary button-large" type="submit">Create demo day</button></div>
+      </form>
+      ${this.#renderIdentityPanel(identity)}
+    </section>`;
+  }
+
+  #renderProfileImport(identity: LocalIdentityV1): string {
+    if (this.#profileCandidate) {
+      const candidate = this.#profileCandidate;
+      const name = profileDisplayName(candidate.metadata, candidate.realNpub);
+      return `<div class="panel profile-preview">
+        <div class="profile-preview-head">${avatar({ picture: profileImage(candidate.metadata), pubkey: candidate.realPubkey, name, size: "lg" })}<div><span class="eyebrow">Profile found</span><h2>${escapeHtml(name)}</h2><p>${escapeHtml(candidate.realNpub)}</p></div></div>
+        ${typeof candidate.metadata.about === "string" ? `<p class="profile-about">${escapeHtml(candidate.metadata.about)}</p>` : ""}
+        <dl class="metadata-list"><div><dt>Source relay</dt><dd>${escapeHtml(candidate.relay)}</dd></div><div><dt>Source event</dt><dd>${escapeHtml(shorten(candidate.event.id))}</dd></div></dl>
+        <p class="callout">The complete profile content and all tags will be copied exactly under this browser’s ephemeral pubkey. A copied NIP-05 identifier is shown as imported data, not as verification of the ephemeral key.</p>
+        <div class="form-actions">${button("Use this profile", "accept-profile", { className: "button button-primary" })}${button("Search again", "clear-profile-candidate", { className: "button button-secondary" })}</div>
+      </div>`;
+    }
+
+    return `<div class="panel form-stack">
+      <div class="key-created"><span>Ephemeral identity ready</span><code>${escapeHtml(identity.npub)}</code></div>
+      <form data-form-action="lookup-profile" data-draft-scope="profile">
+        ${field({ label: "Your usual Nostr npub", name: "real_npub", value: this.#draft("profile", "real_npub", identity.real_npub ?? ""), placeholder: "npub1…", required: true, autocomplete: "off" })}
+        <button class="button button-primary" type="submit">Import profile</button>
+      </form>
+      ${this.#profileLookupFailed ? `<div class="relay-fallback"><h3>Profile not found on the default relays</h3><p>Paste a relay where your usual Nostr profile can be found.</p><form data-form-action="lookup-profile-relay" data-draft-scope="profile-relay">${field({ label: "Profile relay", name: "relay", value: this.#draft("profile-relay", "relay"), placeholder: "wss://relay.example.com", required: true })}<button class="button button-secondary" type="submit">Search relay</button></form></div>` : ""}
+      <p class="fine-print">The app never asks for your normal account’s private key. The generated ephemeral key remains unencrypted in this browser’s local storage.</p>
+    </div>`;
+  }
+
+  #renderSession(selected: SelectedSession, displayMode: boolean): string {
+    const session = this.#repository.getSession(selected);
+    if (!session) {
+      return `<section class="empty-state ${displayMode ? "display-wait" : ""}"><span class="spinner large"></span><h1>Loading demo day…</h1><p>Waiting for a valid session event from the selected captain.</p>${displayMode ? `<a class="button button-secondary" href="#/">Exit display</a>` : `<a class="back-link" href="#/">← Active demo days</a>`}</section>`;
+    }
+    const entries = this.#repository.entriesForSession(session.address);
+    this.#ensureZapSubscription(entries);
+    if (displayMode) return this.#renderDisplay(session, entries);
+    if (session.state.closed_at_ms !== null) return this.#renderClosedSummary(session);
+
+    const identity = getOrCreateIdentity();
+    const ownEntry = this.#repository.entryForParticipant(session.address, identity.public_key_hex);
+    if (!this.#identityReady(identity)) {
+      return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><span class="eyebrow">Join ${escapeHtml(session.state.name)}</span><h1>Import your Nostr profile</h1>${this.#renderProfileImport(identity)}</section>`;
+    }
+    if (!ownEntry) return this.#renderJoinForm(session, identity);
+    return this.#renderParticipantSession(session, entries, ownEntry, identity);
+  }
+
+  #renderJoinForm(session: ParsedSession, identity: LocalIdentityV1): string {
+    const profile = this.#profile(identity.public_key_hex);
+    return `<section class="narrow-page">
+      <a class="back-link" href="#/">← Active demo days</a>
+      <span class="eyebrow">Join demo day</span><h1>${escapeHtml(session.state.name)}</h1>
+      <div class="profile-confirm">${avatar({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name })}<div><strong>${escapeHtml(profile.name)}</strong><span>${escapeHtml(identity.real_npub ?? "")}</span></div></div>
+      <form class="panel form-stack" data-form-action="join-session" data-draft-scope="join">
+        ${field({ label: "Demo name", name: "demo_name", value: this.#draft("join", "demo_name"), required: true, maxlength: 140 })}
+        ${textarea({ label: "Demo description", name: "demo_description", value: this.#draft("join", "demo_description"), required: true, maxlength: 4000, rows: 6 })}
+        ${field({ label: "Demo link — optional", name: "demo_link", value: this.#draft("join", "demo_link"), type: "url", placeholder: "https://…" })}
+        <div class="form-actions"><button class="button button-primary button-large" type="submit">Join demo day</button></div>
+      </form>
+      ${this.#renderIdentityPanel(identity)}
+    </section>`;
+  }
+
+  #renderDisplay(session: ParsedSession, entries: ParsedEntry[]): string {
+    if (session.state.closed_at_ms !== null) {
+      return `<div class="display-summary"><span class="eyebrow">Demo day closed</span><h1>${escapeHtml(session.state.name)}</h1><p>The final summary is available on participant devices.</p><a class="button button-secondary" href="#/">Exit display</a></div>`;
+    }
+    const current = session.state.current_demo_pubkey
+      ? entries.find((entry) => entry.author === session.state.current_demo_pubkey) ?? null
+      : null;
+    if (!current) {
+      return `<div class="display-stage waiting"><a class="display-exit" href="#/">Exit</a><span class="display-kicker">${escapeHtml(session.state.name)}</span><h1>Waiting for the next demonstration</h1><div class="display-rule"></div><p>${entries.length} participants joined</p></div>`;
+    }
+    const profile = this.#profile(current.author);
+    const ready = session.state.timer_started_at_ms === null;
+    return `<div class="display-stage ${ready ? "ready" : "running"}">
+      <a class="display-exit" href="#/">Exit</a>
+      <span class="display-kicker">Presented by ${escapeHtml(profile.name)}</span>
+      <h1>${escapeHtml(current.content.demo.name)}</h1>
+      ${ready ? `<p class="display-description">${escapeHtml(current.content.demo.description)}</p><div class="display-phase ready-label">READY</div>` : this.#renderTimer(session.state.timer_started_at_ms, true)}
+    </div>`;
+  }
+
+  #renderParticipantSession(
+    session: ParsedSession,
+    entries: ParsedEntry[],
+    ownEntry: ParsedEntry,
+    identity: LocalIdentityV1,
+  ): string {
+    const captain = this.#profile(session.event.pubkey);
+    const isCaptain = identity.public_key_hex === session.event.pubkey;
+    const completed = session.state.presented.map((run) => run.pubkey);
+    const current = session.state.current_demo_pubkey
+      ? entries.find((entry) => entry.author === session.state.current_demo_pubkey) ?? null
+      : null;
+    const elo = calculateElo(completed, entries);
+    return `<section class="session-layout">
+      <div class="session-main">
+        <div class="session-title-row"><div><a class="back-link" href="#/">← Active demo days</a><span class="eyebrow">${isCaptain ? "Captain session" : "Participant session"}</span><h1>${escapeHtml(session.state.name)}</h1><p>Captain ${escapeHtml(captain.name)} · ${entries.length} participants</p></div><a class="button button-secondary" href="#/display/${escapeAttr(sessionNaddr(session.event.pubkey, session.d))}">Open display</a></div>
+        ${this.#renderCurrentDemo(session, current)}
+        ${isCaptain ? this.#renderCaptainControls(session, entries) : ""}
+        ${this.#renderLeaderboard(elo.rows, entries, session)}
+        ${this.#renderRankingEditor(session, entries, ownEntry)}
+        ${this.#renderProjectDirectory(session, entries, ownEntry)}
+      </div>
+      <aside class="session-sidebar">
+        ${this.#renderOwnDemoEditor(session, ownEntry)}
+        ${this.#renderIdentityPanel(identity)}
+        <div class="panel protocol-note"><span class="eyebrow">Session address</span><code>${escapeHtml(session.address)}</code><p>By selecting this session, this client trusts only replacements signed by ${escapeHtml(shorten(session.event.pubkey))} at this address.</p></div>
+      </aside>
+    </section>`;
+  }
+
+  #renderCurrentDemo(session: ParsedSession, current: ParsedEntry | null): string {
+    if (!current) {
+      return `<section class="current-demo between"><div><span class="eyebrow">Between demonstrations</span><h2>Waiting for the captain to select a project</h2><p>Completed demos are ready for feedback and ranking.</p></div><div class="between-count"><strong>${session.state.presented.length}</strong><span>completed</span></div></section>`;
+    }
+    const profile = this.#profile(current.author);
+    const metadata = parseProfileMetadata(this.#repository.getProfile(current.author));
+    const hasZap = lightningUrlFromProfile(metadata) !== null;
+    const ready = session.state.timer_started_at_ms === null;
+    return `<section class="current-demo ${ready ? "ready" : "live"}">
+      <div class="current-demo-top"><span class="live-pill">${ready ? "READY" : "LIVE"}</span><span>Presented by ${escapeHtml(profile.name)}</span></div>
+      <h2>${escapeHtml(current.content.demo.name)}</h2>
+      ${ready ? `<p>${escapeHtml(current.content.demo.description)}</p>` : this.#renderTimer(session.state.timer_started_at_ms, false)}
+      <div class="current-actions">
+        ${current.content.demo.link ? `<a class="button button-secondary" href="${escapeAttr(current.content.demo.link)}" target="_blank" rel="noreferrer">Open project</a>` : ""}
+        ${hasZap ? button(`⚡ Zap ${escapeHtml(profile.name)}`, "open-zap", { className: "button button-zap", attrs: `data-entry-author="${escapeAttr(current.author)}"` }) : `<span class="zap-unavailable">Zap unavailable · no Lightning address</span>`}
+      </div>
+    </section>`;
+  }
+
+  #renderTimer(startedAtMs: number | null, display: boolean): string {
+    if (startedAtMs == null) return "";
+    const timer = formatTimer(Date.now() - startedAtMs);
+    return `<div class="timer ${display ? "display-timer" : ""} timer-${timer.className}" data-timer-start="${startedAtMs}">
+      <span data-timer-phase>${timer.phase}</span>
+      <strong data-timer-value>${timer.value}</strong>
+    </div>`;
+  }
+
+  #renderCaptainControls(session: ParsedSession, entries: ParsedEntry[]): string {
+    const presented = new Set(session.state.presented.map((run) => run.pubkey));
+    const unpresented = entries.filter((entry) => !presented.has(entry.author));
+    const drafted = this.#draft("captain", "project");
+    // Drafts persist across renders. Once selected demo is completed, it is no
+    // longer an option; fall back to first unpresented demo instead of sending
+    // stale pubkey through GO! and replaying old demo.
+    const selected = unpresented.some((entry) => entry.author === drafted)
+      ? drafted
+      : (unpresented[0]?.author ?? "");
+    if (selected && selected !== drafted) this.#drafts.set("captain:project", selected);
+    const hasCurrent = session.state.current_demo_pubkey !== null;
+    const timerRunning = session.state.timer_started_at_ms !== null;
+    return `<section class="panel captain-controls">
+      <div class="panel-heading"><div><span class="eyebrow">Captain controls</span><h2>Run the room</h2></div><span>${unpresented.length} unpresented</span></div>
+      <label class="field"><span>Select project</span><select name="project" data-draft-scope="captain" ${hasCurrent ? "disabled" : ""}>
+        ${unpresented.map((entry) => `<option value="${escapeAttr(entry.author)}" ${entry.author === selected ? "selected" : ""}>${escapeHtml(entry.content.demo.name)} — ${escapeHtml(this.#profile(entry.author).name)}</option>`).join("")}
+      </select></label>
+      <div class="captain-button-grid">
+        ${button("GO!", "captain-go", { className: "button button-primary", disabled: hasCurrent || !selected })}
+        ${button("START TIMER", "captain-start", { className: "button button-primary", disabled: !hasCurrent || timerRunning })}
+        ${button("RESTART", "captain-restart", { className: "button button-secondary", disabled: !hasCurrent || !timerRunning })}
+        ${button("DONE", "captain-done", { className: "button button-secondary", disabled: !hasCurrent || !timerRunning })}
+      </div>
+      <div class="danger-zone"><div><strong>Close demo day</strong><span>Freezes rankings, feedback, snapshot IDs, and final Elo.</span></div>${button("CLOSE DEMO DAY", "captain-close", { className: "button button-danger", disabled: hasCurrent })}</div>
+    </section>`;
+  }
+
+  #renderLeaderboard(rows: ReturnType<typeof calculateElo>["rows"], entries: ParsedEntry[], session: ParsedSession): string {
+    const entryMap = new Map(entries.map((entry) => [entry.author, entry]));
+    const receipts = this.#receiptsForSession(session.address, entries);
+    return `<section class="panel leaderboard">
+      <div class="panel-heading"><div><span class="eyebrow">Live Elo</span><h2>Leaderboard</h2></div><span>${session.state.presented.length} completed</span></div>
+      ${rows.length === 0 ? `<p class="empty-copy">Complete at least one demo to start the leaderboard.</p>` : `<div class="table-scroll"><table><thead><tr><th>Rank</th><th>Project</th><th>Presenter</th><th>Elo</th><th>Pairwise votes</th><th>Zaps</th><th>Sats</th></tr></thead><tbody>${rows.map((row, index) => {
+        const entry = entryMap.get(row.pubkey);
+        const profile = this.#profile(row.pubkey);
+        const demoReceipts = receipts.filter((receipt) => receipt.targetEntryAddress === entry?.address);
+        const sats = demoReceipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
+        return `<tr><td><span class="rank-badge">${index + 1}</span></td><td><strong>${escapeHtml(entry?.content.demo.name ?? shorten(row.pubkey))}</strong></td><td><span class="person-inline">${avatar({ picture: profile.picture, pubkey: row.pubkey, name: profile.name, size: "sm" })}${escapeHtml(profile.name)}</span></td><td class="numeric">${Math.round(row.rating)}</td><td class="numeric">${row.pairwiseVotes}</td><td class="numeric">${demoReceipts.length}</td><td class="numeric">${sats.toLocaleString()}</td></tr>`;
+      }).join("")}</tbody></table></div>`}
+      <p class="fine-print">Elo is recalculated from the complete latest ranking dataset in presentation-pair order. Zaps do not affect ratings.</p>
+    </section>`;
+  }
+
+  #renderRankingEditor(session: ParsedSession, entries: ParsedEntry[], ownEntry: ParsedEntry): string {
+    const completed = [...new Set(session.state.presented.map((run) => run.pubkey))]
+      .filter((pubkey) => pubkey !== ownEntry.author);
+    const validSet = new Set(completed);
+    const sourceRanking = this.#pendingRanking ?? ownEntry.content.ranking;
+    const ranking = sourceRanking.filter((pubkey, index) => validSet.has(pubkey) && sourceRanking.indexOf(pubkey) === index);
+    const unranked = completed.filter((pubkey) => !ranking.includes(pubkey));
+    const entryMap = new Map(entries.map((entry) => [entry.author, entry]));
+    const item = (pubkey: string, index: number): string => {
+      const entry = entryMap.get(pubkey);
+      return `<li draggable="true" data-drag-demo="${escapeAttr(pubkey)}" data-drop-index="${index}"><span class="drag-handle" title="Drag to reorder">⋮⋮</span><span class="ranking-number">${index + 1}</span><div><strong>${escapeHtml(entry?.content.demo.name ?? shorten(pubkey))}</strong><small>${escapeHtml(this.#profile(pubkey).name)}</small></div><div class="ranking-actions">${button("↑", "rank-up", { className: "icon-button", disabled: index === 0, attrs: `data-demo="${escapeAttr(pubkey)}"` })}${button("↓", "rank-down", { className: "icon-button", disabled: index === ranking.length - 1, attrs: `data-demo="${escapeAttr(pubkey)}"` })}${button("×", "rank-remove", { className: "icon-button", attrs: `data-demo="${escapeAttr(pubkey)}"` })}</div></li>`;
+    };
+    return `<section class="panel ranking-editor">
+      <div class="panel-heading"><div><span class="eyebrow">Your preference</span><h2>Personal ranking</h2></div><span>Drag to reorder</span></div>
+      ${completed.length === 0 ? `<p class="empty-copy">Completed demos other than your own will appear here.</p>` : `<ol class="ranking-list" data-drop-ranking>${ranking.map(item).join("")}<li class="drop-tail" data-drop-index="${ranking.length}">Drop here</li></ol>`}
+      ${unranked.length ? `<div class="unranked"><h3>Not yet ranked</h3>${unranked.map((pubkey) => `<div class="unranked-item" draggable="true" data-drag-demo="${escapeAttr(pubkey)}"><span>${escapeHtml(entryMap.get(pubkey)?.content.demo.name ?? shorten(pubkey))}</span>${button("Add to ranking", "rank-add", { className: "button button-quiet", attrs: `data-demo="${escapeAttr(pubkey)}"` })}</div>`).join("")}</div>` : ""}
+      <p class="fine-print">Rankings may be incomplete. Your own project is ignored, and presenters cannot vote on pairs containing their own project.</p>
+    </section>`;
+  }
+
+  #renderProjectDirectory(session: ParsedSession, entries: ParsedEntry[], ownEntry: ParsedEntry): string {
+    const position = new Map(session.state.presented.map((run, index) => [run.pubkey, index]));
+    const sorted = [...entries].sort((a, b) => {
+      const aPosition = position.get(a.author);
+      const bPosition = position.get(b.author);
+      if (aPosition != null && bPosition != null) return aPosition - bPosition;
+      if (aPosition != null) return -1;
+      if (bPosition != null) return 1;
+      return a.content.demo.name.localeCompare(b.content.demo.name);
+    });
+    const receipts = this.#receiptsForSession(session.address, entries);
+    return `<section class="project-section">
+      <div class="section-heading"><div><span class="eyebrow">Directory</span><h2>Projects and feedback</h2></div><span>${entries.length} projects</span></div>
+      <div class="project-grid">${sorted.map((entry) => {
+        const profile = this.#profile(entry.author);
+        const run = session.state.presented.find((item) => item.pubkey === entry.author) ?? null;
+        const feedback = entries.flatMap((reviewer) => {
+          const response = reviewer.content.feedback[entry.author];
+          return response && (response.liked.trim() || response.learned.trim()) ? [{ reviewer, response }] : [];
+        });
+        const ownFeedback = ownEntry.content.feedback[entry.author] ?? { liked: "", learned: "" };
+        const metadata = parseProfileMetadata(this.#repository.getProfile(entry.author));
+        const canZap = lightningUrlFromProfile(metadata) !== null;
+        const projectReceipts = receipts.filter((receipt) => receipt.targetEntryAddress === entry.address);
+        const sats = projectReceipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
+        return `<article class="project-card ${run ? "completed" : "pending"}">
+          <div class="project-card-head">${avatar({ picture: profile.picture, pubkey: entry.author, name: profile.name })}<div><span class="eyebrow">${run ? `Presented #${(position.get(entry.author) ?? 0) + 1}` : "Not presented"}</span><h3>${escapeHtml(entry.content.demo.name)}</h3><p>${escapeHtml(profile.name)}</p></div></div>
+          <p class="project-description">${escapeHtml(entry.content.demo.description)}</p>
+          <div class="project-stats"><span>⚡ ${projectReceipts.length} zaps</span><span>${sats.toLocaleString()} sats</span><span>${feedback.length} feedback</span></div>
+          <div class="project-links">${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}${canZap && entry.author !== ownEntry.author ? button("⚡ Zap", "open-zap", { className: "button button-zap button-small", attrs: `data-entry-author="${escapeAttr(entry.author)}"` }) : ""}</div>
+          ${run && entry.author !== ownEntry.author ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}"><h4>Your feedback</h4>${textarea({ label: "What did you like?", name: "liked", value: this.#draft(`feedback-${entry.author}`, "liked", ownFeedback.liked), maxlength: 280, rows: 3 })}${textarea({ label: "What did you learn?", name: "learned", value: this.#draft(`feedback-${entry.author}`, "learned", ownFeedback.learned), maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit">Save feedback</button></form>` : ""}
+          ${feedback.length ? `<details class="feedback-results"><summary>Read feedback (${feedback.length})</summary><div><h4>What people liked</h4>${feedback.filter((item) => item.response.liked.trim()).map((item) => `<blockquote>${escapeHtml(item.response.liked)}<cite>${escapeHtml(this.#profile(item.reviewer.author).name)}</cite></blockquote>`).join("") || `<p>Nothing yet.</p>`}<h4>What people learned</h4>${feedback.filter((item) => item.response.learned.trim()).map((item) => `<blockquote>${escapeHtml(item.response.learned)}<cite>${escapeHtml(this.#profile(item.reviewer.author).name)}</cite></blockquote>`).join("") || `<p>Nothing yet.</p>`}</div></details>` : ""}
+        </article>`;
+      }).join("")}</div>
+    </section>`;
+  }
+
+  #renderOwnDemoEditor(session: ParsedSession, ownEntry: ParsedEntry): string {
+    return `<section class="panel"><div class="panel-heading"><div><span class="eyebrow">Your entry</span><h2>Edit demo</h2></div><span>Auto-replaces one record</span></div>
+      <form class="form-stack" data-form-action="edit-demo" data-draft-scope="edit-demo">
+        ${field({ label: "Demo name", name: "demo_name", value: this.#draft("edit-demo", "demo_name", ownEntry.content.demo.name), required: true, maxlength: 140 })}
+        ${textarea({ label: "Description", name: "demo_description", value: this.#draft("edit-demo", "demo_description", ownEntry.content.demo.description), required: true, maxlength: 4000, rows: 5 })}
+        ${field({ label: "Link — optional", name: "demo_link", value: this.#draft("edit-demo", "demo_link", ownEntry.content.demo.link ?? ""), type: "url" })}
+        <button class="button button-secondary" type="submit">Save demo details</button>
+      </form>
+      <p class="fine-print">You may edit until the captain closes the session. The latest signed replacement is shown everywhere, including while selected.</p>
+    </section>`;
+  }
+
+  #renderIdentityPanel(identity: LocalIdentityV1): string {
+    const profile = this.#profile(identity.public_key_hex);
+    return `<section class="panel identity-panel"><div class="panel-heading"><div><span class="eyebrow">Local identity</span><h2>${escapeHtml(profile.name)}</h2></div></div>
+      <dl class="metadata-list"><div><dt>Real account</dt><dd>${escapeHtml(identity.real_npub ?? "Not imported")}</dd></div><div><dt>Ephemeral npub</dt><dd>${escapeHtml(identity.npub)}</dd></div><div><dt>Source relay</dt><dd>${escapeHtml(identity.source_profile_relay ?? "—")}</dd></div></dl>
+      <div class="button-row">${button("Refresh imported profile", "refresh-profile", { className: "button button-quiet", disabled: !identity.real_pubkey_hex })}${button("Copy real npub", "copy-real-npub", { className: "button button-quiet", disabled: !identity.real_npub })}${button("Copy ephemeral npub", "copy-ephemeral-npub", { className: "button button-quiet" })}</div>
+      <details class="secret-backup"><summary>Ephemeral key backup</summary><p>This unencrypted key controls this browser’s demo-day records. Never include it in an export.</p><code>${escapeHtml(identity.nsec)}</code>${button("Copy nsec", "copy-nsec", { className: "button button-danger button-small" })}</details>
+      ${button("Reset local identity", "reset-identity", { className: "text-button danger-text" })}
+    </section>`;
+  }
+
+  #renderClosedSummary(session: ParsedSession): string {
+    const snapshot = this.#closedSnapshots.get(session.address);
+    if (!snapshot || snapshot.eventId !== session.event.id) {
+      return `<section class="empty-state"><span class="spinner large"></span><span class="eyebrow">Demo day closed</span><h1>Loading the signed snapshot…</h1><p>Fetching the exact entry, profile, and zap event IDs recorded by the captain.</p></section>`;
+    }
+    const entries = snapshot.entries;
+    const entryMap = new Map(entries.map((entry) => [entry.author, entry]));
+    const captainProfile = snapshot.profiles.get(session.event.pubkey) ?? this.#repository.getProfile(session.event.pubkey);
+    const captain = profileView(captainProfile, session.event.pubkey);
+    const finalElo = session.state.final_elo ?? rankElo(calculateElo(session.state.presented.map((run) => run.pubkey), entries).rows);
+    const totalSats = snapshot.receipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
+    const totalTiming = session.state.presented.reduce((acc, run) => {
+      const timing = splitPresentationTime(run.finished_at_ms - run.started_at_ms);
+      acc.presentation += timing.presentation_ms;
+      acc.questions += timing.questions_ms;
+      acc.overtime += timing.overtime_ms;
+      return acc;
+    }, { presentation: 0, questions: 0, overtime: 0 });
+    return `<section class="summary-page">
+      <div class="summary-hero"><div><a class="back-link" href="#/">← Active demo days</a><span class="eyebrow">Closed demo day</span><h1>${escapeHtml(session.state.name)}</h1><p>Final signed snapshot · Captain ${escapeHtml(captain.name)}</p></div>${button("Download JSON", "download-export", { className: "button button-primary button-large", disabled: snapshot.missingIds.length > 0, attrs: snapshot.missingIds.length ? `title="Exact snapshot events are unavailable"` : "" })}</div>
+      ${snapshot.missingIds.length ? `<div class="notice notice-error static"><strong>Incomplete signed snapshot.</strong> ${snapshot.missingIds.length} required event IDs or manifest fields could not be validated. JSON download is disabled rather than substituting newer relay state.</div>` : ""}
+      <section class="summary-metrics">
+        <div><span>Participants</span><strong>${entries.length}</strong></div><div><span>Completed demos</span><strong>${session.state.presented.length}</strong></div><div><span>Presenter zaps</span><strong>${snapshot.receipts.length}</strong></div><div><span>Sats sent</span><strong>${totalSats.toLocaleString()}</strong></div><div><span>Started</span><strong>${escapeHtml(formatDateTime(session.state.created_at_ms))}</strong></div><div><span>Closed</span><strong>${escapeHtml(formatDateTime(session.state.closed_at_ms))}</strong></div>
+      </section>
+      <section class="panel leaderboard"><div class="panel-heading"><div><span class="eyebrow">Final result</span><h2>Leaderboard</h2></div><span>Ratings retained to six decimals</span></div>
+        <div class="table-scroll"><table><thead><tr><th>Rank</th><th>Project</th><th>Presenter</th><th>Final Elo</th><th>Votes</th><th>Zaps</th><th>Sats</th><th>Elapsed</th><th>Overtime</th></tr></thead><tbody>${finalElo.map((row) => {
+          const entry = entryMap.get(row.pubkey);
+          const run = session.state.presented.find((item) => item.pubkey === row.pubkey);
+          const timing = run ? splitPresentationTime(run.finished_at_ms - run.started_at_ms) : null;
+          const demoReceipts = snapshot.receipts.filter((receipt) => receipt.targetEntryAddress === entry?.address);
+          const sats = demoReceipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
+          const pairVotes = calculateElo(session.state.presented.map((item) => item.pubkey), entries).rows.find((item) => item.pubkey === row.pubkey)?.pairwiseVotes ?? 0;
+          return `<tr><td><span class="rank-badge">${row.rank}</span></td><td><strong>${escapeHtml(entry?.content.demo.name ?? shorten(row.pubkey))}</strong></td><td>${escapeHtml(this.#snapshotProfileName(snapshot, row.pubkey))}</td><td class="numeric">${row.rating.toFixed(6)}</td><td class="numeric">${pairVotes}</td><td class="numeric">${demoReceipts.length}</td><td class="numeric">${sats.toLocaleString()}</td><td>${timing ? formatClockSeconds(Math.floor(timing.total_ms / 1000)) : "—"}</td><td>${timing ? formatClockSeconds(Math.floor(timing.overtime_ms / 1000), "+") : "—"}</td></tr>`;
+        }).join("")}</tbody></table></div>
+      </section>
+      <section class="summary-timing"><div><span>Presentation time</span><strong>${formatClockSeconds(Math.floor(totalTiming.presentation / 1000))}</strong></div><div><span>Question time</span><strong>${formatClockSeconds(Math.floor(totalTiming.questions / 1000))}</strong></div><div><span>Overtime</span><strong>${formatClockSeconds(Math.floor(totalTiming.overtime / 1000), "+")}</strong></div></section>
+      <section class="project-section"><div class="section-heading"><div><span class="eyebrow">Project record</span><h2>Demos, feedback, and zaps</h2></div></div><div class="summary-projects">${session.state.presented.map((run, index) => {
+        const entry = entryMap.get(run.pubkey);
+        if (!entry) return "";
+        const profile = snapshot.profiles.get(entry.author) ?? null;
+        const metadata = parseProfileMetadata(profile);
+        const name = profileDisplayName(metadata, npubEncode(entry.content.real_pubkey));
+        const timing = splitPresentationTime(run.finished_at_ms - run.started_at_ms);
+        const feedback = entries.flatMap((reviewer) => {
+          const response = reviewer.content.feedback[entry.author];
+          return response && (response.liked.trim() || response.learned.trim()) ? [{ reviewer, response }] : [];
+        });
+        const receipts = snapshot.receipts.filter((receipt) => receipt.targetEntryAddress === entry.address);
+        const elo = finalElo.find((row) => row.pubkey === entry.author);
+        return `<article class="summary-project">
+          <div class="summary-project-title"><span class="position-number">${index + 1}</span>${avatar({ picture: profileImage(metadata), pubkey: entry.author, name, size: "lg" })}<div><span class="eyebrow">Presented by ${escapeHtml(name)}</span><h3>${escapeHtml(entry.content.demo.name)}</h3><p>${escapeHtml(entry.content.demo.description)}</p>${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}</div></div>
+          <div class="project-detail-grid"><div><span>Real account</span><code>${escapeHtml(npubEncode(entry.content.real_pubkey))}</code></div><div><span>Final Elo</span><strong>${elo?.rating.toFixed(6) ?? "—"}</strong></div><div><span>Presentation</span><strong>${formatClockSeconds(Math.floor(timing.presentation_ms / 1000))}</strong></div><div><span>Questions</span><strong>${formatClockSeconds(Math.floor(timing.questions_ms / 1000))}</strong></div><div><span>Overtime</span><strong>${formatClockSeconds(Math.floor(timing.overtime_ms / 1000), "+")}</strong></div><div><span>Zaps</span><strong>${receipts.length} · ${receipts.reduce((sum, item) => sum + (item.amountSats ?? 0), 0).toLocaleString()} sats</strong></div></div>
+          <div class="feedback-columns"><div><h4>What people liked</h4>${feedback.filter((item) => item.response.liked.trim()).map((item) => `<blockquote>${escapeHtml(item.response.liked)}<cite>${escapeHtml(this.#snapshotProfileName(snapshot, item.reviewer.author))}</cite></blockquote>`).join("") || `<p>No responses.</p>`}</div><div><h4>What people learned</h4>${feedback.filter((item) => item.response.learned.trim()).map((item) => `<blockquote>${escapeHtml(item.response.learned)}<cite>${escapeHtml(this.#snapshotProfileName(snapshot, item.reviewer.author))}</cite></blockquote>`).join("") || `<p>No responses.</p>`}</div></div>
+          ${receipts.length ? `<div class="zap-comments"><h4>Zap comments</h4>${receipts.map((receipt) => `<p><strong>${(receipt.amountSats ?? 0).toLocaleString()} sats</strong>${receipt.comment ? ` · ${escapeHtml(receipt.comment)}` : ""}</p>`).join("")}</div>` : ""}
+        </article>`;
+      }).join("")}</div></section>
+      ${this.#renderFollowSuggestions(session, snapshot)}
+    </section>`;
+  }
+
+  #renderFollowSuggestions(session: ParsedSession, snapshot: ClosedSnapshot): string {
+    if (snapshot.missingIds.length > 0) {
+      return `<section class="panel follow-panel"><span class="eyebrow">Stay connected</span><h2>Follow suggestions unavailable</h2><p>The exact closed snapshot is incomplete on the reachable relays, so the app will not derive suggestions from substitute participant state.</p></section>`;
+    }
+    const identity = loadIdentity();
+    const ownEntry = identity ? snapshot.entries.find((entry) => entry.author === identity.public_key_hex) ?? null : null;
+    if (!identity || !ownEntry || !identity.real_pubkey_hex) {
+      return `<section class="panel"><span class="eyebrow">Stay connected</span><h2>Follow suggestions</h2><p>This browser does not have a participant identity from the closed snapshot, so personalized suggestions are unavailable.</p></section>`;
+    }
+    const state = this.#followState;
+    if (!state || state.sessionAddress !== session.address || state.status === "loading") {
+      return `<section class="panel follow-panel"><span class="eyebrow">Stay connected</span><h2>Loading your current follows…</h2><p>Suggestions use real Nostr accounts, never ephemeral demo-day keys.</p></section>`;
+    }
+    if (state.status === "missing") {
+      return `<section class="panel follow-panel"><span class="eyebrow">Stay connected</span><h2>Follow list not found on the known relays</h2><p>Paste a relay used by your usual Nostr client. The app will not assume that you follow nobody.</p><form data-form-action="lookup-follow-relay" data-draft-scope="follow-relay">${field({ label: "Follow-list relay", name: "relay", value: this.#draft("follow-relay", "relay"), placeholder: "wss://relay.example.com", required: true })}<button class="button button-secondary" type="submit">Search relay</button></form></section>`;
+    }
+    if (state.status === "error") {
+      return `<section class="panel follow-panel"><h2>Could not load follow suggestions</h2><p>${escapeHtml(state.message ?? "Unknown error")}</p>${button("Try again", "refresh-follows", { className: "button button-secondary" })}</section>`;
+    }
+    if (state.suggestions.length === 0) {
+      return `<section class="panel follow-panel"><span class="eyebrow">Stay connected</span><h2>You already follow everyone from this demo day.</h2>${button("Refresh follows", "refresh-follows", { className: "button button-secondary" })}</section>`;
+    }
+    return `<section class="panel follow-panel"><div class="panel-heading"><div><span class="eyebrow">Stay connected</span><h2>People you do not yet follow</h2></div><span>${state.suggestions.length} remaining</span></div><p>Open these real accounts in your normal Nostr client, then refresh.</p><div class="follow-grid">${state.suggestions.map((realPubkey) => {
+      const entry = snapshot.entries.find((item) => item.content.real_pubkey === realPubkey);
+      const profile = entry ? snapshot.profiles.get(entry.author) ?? null : null;
+      const metadata = parseProfileMetadata(profile);
+      const npub = npubEncode(realPubkey);
+      const name = profileDisplayName(metadata, npub);
+      return `<article class="follow-card">${avatar({ picture: profileImage(metadata), pubkey: realPubkey, name })}<div><strong>${escapeHtml(name)}</strong>${typeof metadata.about === "string" ? `<p>${escapeHtml(metadata.about)}</p>` : ""}<code>${escapeHtml(npub)}</code><div><a class="button button-quiet" href="nostr:${escapeAttr(npub)}">Open in Nostr</a>${button("Copy npub", "copy-suggestion-npub", { className: "button button-quiet", attrs: `data-npub="${escapeAttr(npub)}"` })}</div></div></article>`;
+    }).join("")}</div><div class="form-actions">${button("Copy all remaining npubs", "copy-all-suggestions", { className: "button button-secondary" })}${button("Refresh follows", "refresh-follows", { className: "button button-secondary" })}</div></section>`;
+  }
+
+  #renderZapModal(): string {
+    const modal = this.#zapModal;
+    if (!modal) return "";
+    const routeSession = this.#currentSession();
+    const entry = routeSession ? this.#repository.entryForParticipant(routeSession.address, modal.entryAuthor) : null;
+    const profile = entry ? this.#profile(entry.author) : null;
+    const body = modal.status === "form" ? `<form data-form-action="submit-zap" data-draft-scope="zap"><p>Payment goes to <strong>${escapeHtml(profile?.name ?? "the presenter")}</strong>’s real Nostr account and targets this demo entry.</p>${field({ label: "Amount (sats)", name: "amount", value: this.#draft("zap", "amount", modal.amountSats), type: "number", required: true })}${textarea({ label: "Comment — optional", name: "comment", value: this.#draft("zap", "comment", modal.comment), maxlength: 280, rows: 3 })}<button class="button button-zap button-large" type="submit">⚡ Request invoice</button></form>`
+      : modal.status === "loading" ? `<div class="modal-state"><span class="spinner large"></span><h3>Preparing Nostr zap…</h3><p>Checking LNURL support and requesting a signed invoice.</p></div>`
+      : modal.status === "invoice" ? `<div class="modal-state"><span class="zap-icon">⚡</span><h3>Invoice ready</h3><p>Pay with a Lightning wallet. The receipt will appear after the recipient’s service publishes it.</p><textarea class="invoice" readonly>${escapeHtml(modal.invoice ?? "")}</textarea><div class="form-actions"><a class="button button-zap" href="lightning:${escapeAttr(modal.invoice ?? "")}">Open wallet</a>${button("Copy invoice", "copy-invoice", { className: "button button-secondary" })}</div></div>`
+      : modal.status === "paid" ? `<div class="modal-state"><span class="zap-icon">✓</span><h3>Payment sent</h3><p>Waiting for the signed kind-9735 receipt on the demo-day relays.</p></div>`
+      : `<div class="modal-state"><h3>Zap unavailable</h3><p>${escapeHtml(modal.error ?? "The zap could not be prepared.")}</p>${button("Try again", "reset-zap", { className: "button button-secondary" })}</div>`;
+    return `<div class="modal-backdrop" data-action="close-zap"><section class="modal" role="dialog" aria-modal="true" aria-label="Zap presenter"><button class="modal-close" data-action="close-zap" aria-label="Close">×</button><span class="eyebrow">Presenter zap</span><h2>${escapeHtml(entry?.content.demo.name ?? "Demo")}</h2>${body}</section></div>`;
+  }
+
+  #identityReady(identity: LocalIdentityV1): boolean {
+    return Boolean(
+      identity.real_pubkey_hex &&
+      identity.real_npub &&
+      identity.source_profile_event_id &&
+      identity.source_profile_relay &&
+      identity.copied_profile_event_id,
+    );
+  }
+
+  #profile(pubkey: string): ReturnType<typeof profileView> {
+    const event = this.#repository.getProfile(pubkey);
+    if (!event && !this.#requestedProfiles.has(pubkey)) {
+      this.#requestedProfiles.add(pubkey);
+      void this.#repository.ensureProfile(pubkey).finally(() => {
+        this.#requestedProfiles.delete(pubkey);
+        this.requestRender();
+      });
+    }
+    return profileView(event, pubkey);
+  }
+
+  #draft(scope: string, name: string, fallback = ""): string {
+    return this.#drafts.get(`${scope}:${name}`) ?? fallback;
+  }
+
+  #clearDraftScope(scope: string): void {
+    for (const key of [...this.#drafts.keys()]) {
+      if (key.startsWith(`${scope}:`)) this.#drafts.delete(key);
+    }
+  }
+
+  #currentSelected(): SelectedSession | null {
+    return this.#route.name === "session" || this.#route.name === "display" ? this.#route.selected : null;
+  }
+
+  #currentSession(): ParsedSession | null {
+    const selected = this.#currentSelected();
+    return selected ? this.#repository.getSession(selected) : null;
+  }
+
+  #snapshotProfileName(snapshot: ClosedSnapshot, pubkey: string): string {
+    const entry = snapshot.entries.find((item) => item.author === pubkey);
+    const profile = snapshot.profiles.get(pubkey) ?? null;
+    const metadata = parseProfileMetadata(profile);
+    const fallback = entry ? npubEncode(entry.content.real_pubkey) : npubEncode(pubkey);
+    return profileDisplayName(metadata, fallback);
+  }
+
+  #receiptsForSession(address: string, entries: ParsedEntry[]): ZapReceipt[] {
+    const zapEvents = this.#repository.zapEvents();
+    const key = `${entries.map((entry) => `${entry.event.id}:${entry.address}`).sort().join("|")}::${zapEvents.map((event) => event.id).sort().join("|")}`;
+    const cached = this.#receiptCache.get(address);
+    if (cached?.key === key) return cached.receipts;
+    if (!this.#receiptLoading.has(address)) {
+      this.#receiptLoading.add(address);
+      void collectZapReceipts({
+        events: zapEvents,
+        entries: entries.map((entry) => ({ address: entry.address, realPubkey: entry.content.real_pubkey })),
+      }).then((receipts) => {
+        this.#receiptCache.set(address, { key, receipts });
+      }).finally(() => {
+        this.#receiptLoading.delete(address);
+        this.requestRender();
+      });
+    }
+    return cached?.receipts ?? [];
+  }
+
+  #ensureZapSubscription(entries: ParsedEntry[]): void {
+    const key = entries.map((entry) => `${entry.address}:${entry.content.real_pubkey}`).sort().join("|");
+    if (key === this.#zapSubscriptionKey) return;
+    this.#zapUnsubscribe?.();
+    this.#zapSubscriptionKey = key;
+    this.#zapUnsubscribe = this.#repository.subscribeZaps(entries);
+    if (entries.length > 0) void this.#repository.refreshZaps(entries);
+  }
+
+  #ensureRouteData(): void {
+    if (this.#route.name === "home") {
+      for (const session of this.#repository.activeSessions()) {
+        this.#profile(session.event.pubkey);
+      }
+      return;
+    }
+    if (this.#route.name !== "session" && this.#route.name !== "display") return;
+    const session = this.#repository.getSession(this.#route.selected);
+    if (!session) return;
+    const entries = this.#repository.entriesForSession(session.address);
+    this.#profile(session.event.pubkey);
+    for (const entry of entries) this.#profile(entry.author);
+    if (session.state.closed_at_ms !== null) {
+      void this.#loadClosedSnapshot(session);
+    }
+  }
+
+  #activateRoute(): void {
+    this.#sessionUnsubscribe?.();
+    this.#sessionUnsubscribe = null;
+    this.#zapUnsubscribe?.();
+    this.#zapUnsubscribe = null;
+    this.#zapSubscriptionKey = "";
+    this.#route = parseRoute();
+    this.#followState = null;
+    this.#zapModal = null;
+    if (this.#route.name === "session" || this.#route.name === "display") {
+      this.#sessionUnsubscribe = this.#repository.subscribeSession(this.#route.selected);
+      void this.#repository.refreshSession(this.#route.selected).catch((error: unknown) => {
+        this.#notice = { kind: "error", text: error instanceof Error ? error.message : String(error) };
+        this.requestRender();
+      });
+    }
+  }
+
+  async #loadClosedSnapshot(session: ParsedSession): Promise<void> {
+    const existing = this.#closedSnapshots.get(session.address);
+    if (existing?.eventId === session.event.id || this.#loadingSnapshots.has(session.address)) {
+      if (existing && (!this.#followState || this.#followState.sessionAddress !== session.address)) void this.#loadFollows(session, existing);
+      return;
+    }
+    this.#loadingSnapshots.add(session.address);
+    try {
+      const entryIds = session.state.snapshot_entry_ids ?? [];
+      const profileIds = session.state.snapshot_profile_ids ?? [];
+      const zapIds = session.state.snapshot_zap_ids ?? [];
+      const requestedIds = [...entryIds, ...profileIds, ...zapIds];
+      const events = requestedIds.length ? await this.#repository.fetchEventsByIds(requestedIds) : [];
+      const foundIds = new Set(events.map((event) => event.id));
+      const missingIds = requestedIds.filter((id) => !foundIds.has(id));
+      const entries = events
+        .filter((event) => entryIds.includes(event.id))
+        .map((event) => parseParticipantEntryEvent(event, session.address))
+        .filter((entry): entry is ParsedEntry => entry !== null);
+      const validEntryIds = new Set(entries.map((entry) => entry.event.id));
+      for (const id of entryIds) {
+        if (!validEntryIds.has(id) && !missingIds.includes(id)) missingIds.push(id);
+      }
+      const profiles = new Map<string, NostrEvent>();
+      const validProfileIds = new Set<string>();
+      for (const event of events.filter((item) => profileIds.includes(item.id) && item.kind === 0)) {
+        profiles.set(event.pubkey, event);
+        validProfileIds.add(event.id);
+      }
+      for (const id of profileIds) {
+        if (!validProfileIds.has(id) && !missingIds.includes(id)) missingIds.push(id);
+      }
+      const receiptEvents = events.filter((event) => zapIds.includes(event.id));
+      const receipts = await collectZapReceipts({
+        events: receiptEvents,
+        entries: entries.map((entry) => ({ address: entry.address, realPubkey: entry.content.real_pubkey })),
+      });
+      const validReceiptIds = new Set(receipts.map((receipt) => receipt.event.id));
+      for (const id of zapIds) {
+        if (!validReceiptIds.has(id) && !missingIds.includes(id)) missingIds.push(id);
+      }
+      if (session.state.snapshot_entry_ids === null) missingIds.push("snapshot_entry_ids");
+      if (session.state.snapshot_profile_ids === null) missingIds.push("snapshot_profile_ids");
+      if (session.state.snapshot_zap_ids === null) missingIds.push("snapshot_zap_ids");
+      const snapshot: ClosedSnapshot = {
+        eventId: session.event.id,
+        entries,
+        profiles,
+        receipts,
+        missingIds,
+      };
+      this.#closedSnapshots.set(session.address, snapshot);
+      void this.#loadFollows(session, snapshot);
+    } catch (error) {
+      this.#notice = { kind: "error", text: `Could not reconstruct the closed snapshot: ${error instanceof Error ? error.message : String(error)}` };
+    } finally {
+      this.#loadingSnapshots.delete(session.address);
+      this.requestRender();
+    }
+  }
+
+  async #loadFollows(session: ParsedSession, snapshot: ClosedSnapshot, singleRelay?: string): Promise<void> {
+    const identity = loadIdentity();
+    const ownEntry = identity ? snapshot.entries.find((entry) => entry.author === identity.public_key_hex) ?? null : null;
+    if (!identity?.real_pubkey_hex || !ownEntry) return;
+    this.#followState = {
+      sessionAddress: session.address,
+      status: "loading",
+      followEvent: null,
+      suggestions: [],
+      message: null,
+    };
+    this.requestRender();
+    try {
+      const relays = singleRelay ? [singleRelay] : dedupe([...DEFAULT_RELAYS, ...identity.real_account_relays]);
+      const results = await this.#repository.queryRaw(relays, {
+        kinds: [FOLLOW_LIST_KIND],
+        authors: [identity.real_pubkey_hex],
+        limit: 1,
+      });
+      const selected = chooseLatest(results);
+      if (!selected) {
+        this.#followState = {
+          sessionAddress: session.address,
+          status: "missing",
+          followEvent: null,
+          suggestions: [],
+          message: null,
+        };
+        return;
+      }
+      if (singleRelay) addAccountRelay(singleRelay);
+      const suggestions = calculateFollowSuggestions({
+        ownRealPubkey: identity.real_pubkey_hex,
+        participantRealPubkeys: snapshot.entries.map((entry) => entry.content.real_pubkey),
+        followEvent: selected.event,
+      });
+      this.#followState = {
+        sessionAddress: session.address,
+        status: "ready",
+        followEvent: selected.event,
+        suggestions,
+        message: null,
+      };
+    } catch (error) {
+      this.#followState = {
+        sessionAddress: session.address,
+        status: "error",
+        followEvent: null,
+        suggestions: [],
+        message: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      this.requestRender();
+    }
+  }
+
+  async #withBusy(label: string, operation: () => Promise<void>): Promise<void> {
+    if (this.#busy) return;
+    this.#busy = label;
+    this.requestRender();
+    try {
+      await operation();
+    } catch (error) {
+      this.#notice = { kind: "error", text: error instanceof Error ? error.message : String(error) };
+    } finally {
+      this.#busy = null;
+      this.requestRender();
+    }
+  }
+
+  async #lookupProfile(realNpub: string, relay?: string): Promise<void> {
+    const realPubkey = decodeNpub(realNpub.trim());
+    let found: { event: NostrEvent; relay: string } | null;
+    if (relay) {
+      const results = await this.#repository.queryRaw([relay], {
+        kinds: [0],
+        authors: [realPubkey],
+        limit: 1,
+      });
+      const selected = chooseLatest(results);
+      found = selected ? { event: selected.event, relay: selected.relay } : null;
+    } else {
+      found = await findRealProfile({ repository: this.#repository, realPubkey });
+    }
+    if (!found) {
+      this.#profileCandidate = null;
+      this.#profileLookupFailed = true;
+      this.#notice = {
+        kind: "info",
+        text: relay ? "No profile was found on this relay. Check the address or try another relay." : "Profile not found on the default relays.",
+      };
+      return;
+    }
+    this.#profileCandidate = {
+      realNpub: npubEncode(realPubkey),
+      realPubkey,
+      event: found.event,
+      relay: found.relay,
+      metadata: parseProfileMetadata(found.event),
+      addedRelay: Boolean(relay),
+    };
+    this.#profileLookupFailed = false;
+  }
+
+  async #acceptProfile(): Promise<void> {
+    const candidate = this.#profileCandidate;
+    if (!candidate) throw new Error("No profile is selected");
+    const identity = getOrCreateIdentity();
+    const imported = await importProfile({
+      repository: this.#repository,
+      identity,
+      sourceEvent: candidate.event,
+      sourceRelay: candidate.relay,
+    });
+    attachImportedProfile({
+      realPubkey: candidate.realPubkey,
+      realNpub: candidate.realNpub,
+      sourceProfileEventId: candidate.event.id,
+      sourceProfileRelay: candidate.relay,
+      copiedProfileEventId: imported.copiedEvent.id,
+      ...(candidate.addedRelay ? { accountRelay: candidate.relay } : {}),
+    });
+    this.#profileCandidate = null;
+    this.#profileLookupFailed = false;
+    this.#notice = { kind: "success", text: "Complete profile copied under the local ephemeral identity." };
+  }
+
+  async #refreshImportedProfile(): Promise<void> {
+    const identity = loadIdentity();
+    if (!identity?.real_pubkey_hex || !identity.real_npub) throw new Error("Import a real account first");
+    const found = await findRealProfile({
+      repository: this.#repository,
+      realPubkey: identity.real_pubkey_hex,
+      additionalRelays: identity.real_account_relays,
+    });
+    if (!found) throw new Error("The profile was not found on the known relays");
+    if (found.event.id === identity.source_profile_event_id) {
+      this.#notice = { kind: "info", text: "The imported profile is already current." };
+      return;
+    }
+    const imported = await importProfile({
+      repository: this.#repository,
+      identity,
+      sourceEvent: found.event,
+      sourceRelay: found.relay,
+    });
+    const nextIdentity = attachImportedProfile({
+      realPubkey: identity.real_pubkey_hex,
+      realNpub: identity.real_npub,
+      sourceProfileEventId: found.event.id,
+      sourceProfileRelay: found.relay,
+      copiedProfileEventId: imported.copiedEvent.id,
+      ...(DEFAULT_RELAYS.includes(found.relay as typeof DEFAULT_RELAYS[number]) ? {} : { accountRelay: found.relay }),
+    });
+    const session = this.#currentSession();
+    if (session && session.state.closed_at_ms === null) {
+      const ownEntry = this.#repository.entryForParticipant(session.address, nextIdentity.public_key_hex);
+      if (ownEntry) {
+        await this.#publishOwnEntry((content) => ({
+          ...content,
+          source_profile_event_id: found.event.id,
+          source_profile_relay: found.relay,
+          updated_at_ms: Date.now(),
+        }));
+      }
+    }
+    this.#notice = { kind: "success", text: "Imported profile refreshed and copied." };
+  }
+
+  #formDemo(formData: FormData): { name: string; description: string; link: string | null } {
+    const name = clampText(String(formData.get("demo_name") ?? ""), 140);
+    const description = clampText(String(formData.get("demo_description") ?? ""), 4000);
+    const rawLink = String(formData.get("demo_link") ?? "").trim();
+    if (!name || !description) throw new Error("Demo name and description are required");
+    const link = rawLink ? normalizeOptionalUrl(rawLink) : null;
+    if (rawLink && !link) throw new Error("Demo link must be a valid HTTP or HTTPS URL");
+    return { name, description, link };
+  }
+
+  async #createSession(formData: FormData): Promise<void> {
+    const identity = loadIdentity();
+    if (!identity || !this.#identityReady(identity)) throw new Error("Complete profile import first");
+    const name = clampText(String(formData.get("session_name") ?? ""), 140);
+    if (!name) throw new Error("Demo-day name is required");
+    const demo = this.#formDemo(formData);
+    const sessionD = `sedd-session:${randomHex(16)}`;
+    const address = `${APP_KIND}:${identity.public_key_hex}:${sessionD}`;
+    const state: DemoDaySessionV1 = {
+      v: 1,
+      type: "session",
+      name,
+      created_at_ms: Date.now(),
+      closed_at_ms: null,
+      current_demo_pubkey: null,
+      timer_started_at_ms: null,
+      presented: [],
+      final_elo: null,
+      snapshot_entry_ids: null,
+      snapshot_profile_ids: null,
+      snapshot_zap_ids: null,
+    };
+    const sessionEvent = await buildSessionEvent({
+      sessionD,
+      state,
+      secretKeyHex: identity.secret_key_hex,
+      createdAt: nextCreatedAt(),
+    });
+    const entryContent: ParticipantEntryV1 = {
+      v: 1,
+      type: "entry",
+      real_pubkey: identity.real_pubkey_hex as string,
+      source_profile_event_id: identity.source_profile_event_id as string,
+      source_profile_relay: identity.source_profile_relay as string,
+      demo,
+      ranking: [],
+      feedback: {},
+      updated_at_ms: Date.now(),
+    };
+    const profile = this.#repository.getProfile(identity.public_key_hex) ?? await this.#repository.ensureProfile(identity.public_key_hex);
+    if (!profile) throw new Error("Copied profile is not available");
+    const entryEvent = await buildEntryEvent({
+      sessionAddress: address,
+      sessionD,
+      entry: entryContent,
+      profile: parseProfileMetadata(profile),
+      secretKeyHex: identity.secret_key_hex,
+      createdAt: nextCreatedAt(),
+    });
+    await this.#repository.publish(sessionEvent);
+    await this.#repository.publish(entryEvent);
+    this.#clearDraftScope("create");
+    this.#notice = { kind: "success", text: "Demo day created and published." };
+    navigate(`/session/${sessionNaddr(identity.public_key_hex, sessionD)}`);
+  }
+
+  async #joinSession(formData: FormData): Promise<void> {
+    const session = this.#currentSession();
+    const identity = loadIdentity();
+    if (!session || !identity || !this.#identityReady(identity)) throw new Error("Session or identity is not ready");
+    if (session.state.closed_at_ms !== null) throw new Error("This demo day is closed");
+    const demo = this.#formDemo(formData);
+    const profile = this.#repository.getProfile(identity.public_key_hex) ?? await this.#repository.ensureProfile(identity.public_key_hex);
+    if (!profile) throw new Error("Copied profile is not available");
+    const entry: ParticipantEntryV1 = {
+      v: 1,
+      type: "entry",
+      real_pubkey: identity.real_pubkey_hex as string,
+      source_profile_event_id: identity.source_profile_event_id as string,
+      source_profile_relay: identity.source_profile_relay as string,
+      demo,
+      ranking: [],
+      feedback: {},
+      updated_at_ms: Date.now(),
+    };
+    const event = await buildEntryEvent({
+      sessionAddress: session.address,
+      sessionD: session.d,
+      entry,
+      profile: parseProfileMetadata(profile),
+      secretKeyHex: identity.secret_key_hex,
+      createdAt: nextCreatedAt(),
+    });
+    await this.#repository.publish(event);
+    this.#clearDraftScope("join");
+    this.#notice = { kind: "success", text: "You joined the demo day." };
+  }
+
+  async #publishOwnEntry(update: (content: ParticipantEntryV1) => ParticipantEntryV1): Promise<void> {
+    const session = this.#currentSession();
+    const identity = loadIdentity();
+    if (!session || !identity) throw new Error("Session or identity is unavailable");
+    if (session.state.closed_at_ms !== null) throw new Error("This demo day is closed");
+    const current = this.#repository.entryForParticipant(session.address, identity.public_key_hex);
+    if (!current) throw new Error("You have not joined this session");
+    const profile = this.#repository.getProfile(identity.public_key_hex) ?? await this.#repository.ensureProfile(identity.public_key_hex);
+    if (!profile) throw new Error("Copied profile is unavailable");
+    const nextContent = update(current.content);
+    const event = await buildEntryEvent({
+      sessionAddress: session.address,
+      sessionD: session.d,
+      entry: nextContent,
+      profile: parseProfileMetadata(profile),
+      secretKeyHex: identity.secret_key_hex,
+      createdAt: nextCreatedAt(current.event.created_at),
+    });
+    await this.#repository.publish(event);
+  }
+
+  async #mutateSession(update: (state: DemoDaySessionV1) => DemoDaySessionV1): Promise<void> {
+    const session = this.#currentSession();
+    const identity = loadIdentity();
+    if (!session || !identity) throw new Error("Session or identity is unavailable");
+    if (session.event.pubkey !== identity.public_key_hex) throw new Error("Only the selected session captain may update this session");
+    if (session.state.closed_at_ms !== null) throw new Error("This demo day is closed");
+    const nextState = update(session.state);
+    const event = await buildSessionEvent({
+      sessionD: session.d,
+      state: nextState,
+      secretKeyHex: identity.secret_key_hex,
+      createdAt: nextCreatedAt(session.event.created_at),
+    });
+    await this.#repository.publish(event);
+  }
+
+  async #closeDemoDay(): Promise<void> {
+    const selected = this.#currentSelected();
+    const identity = loadIdentity();
+    if (!selected || !identity) throw new Error("Session is unavailable");
+    await this.#repository.refreshSession(selected);
+    let session = this.#repository.getSession(selected);
+    if (!session) throw new Error("Session event is missing");
+    if (session.event.pubkey !== identity.public_key_hex) throw new Error("Only the selected session captain may close this demo day");
+    if (session.state.current_demo_pubkey !== null) throw new Error("Mark the current demo DONE before closing");
+    const entries = this.#repository.entriesForSession(session.address);
+    for (const entry of entries) await this.#repository.ensureProfile(entry.author);
+    await this.#repository.refreshZaps(entries);
+    const receipts = await collectZapReceipts({
+      events: this.#repository.zapEvents(),
+      entries: entries.map((entry) => ({ address: entry.address, realPubkey: entry.content.real_pubkey })),
+    });
+    const finalElo = rankElo(calculateElo(session.state.presented.map((run) => run.pubkey), entries).rows);
+    const profileIds = entries
+      .map((entry) => this.#repository.getProfile(entry.author)?.id)
+      .filter((id): id is string => Boolean(id));
+    if (profileIds.length !== entries.length) {
+      throw new Error("Every participant's copied profile must be available before closing the demo day");
+    }
+    session = this.#repository.getSession(selected) ?? session;
+    const finalState: DemoDaySessionV1 = {
+      ...session.state,
+      closed_at_ms: Date.now(),
+      current_demo_pubkey: null,
+      timer_started_at_ms: null,
+      final_elo: finalElo,
+      snapshot_entry_ids: entries.map((entry) => entry.event.id),
+      snapshot_profile_ids: profileIds,
+      snapshot_zap_ids: receipts.map((receipt) => receipt.event.id),
+    };
+    const event = await buildSessionEvent({
+      sessionD: session.d,
+      state: finalState,
+      secretKeyHex: identity.secret_key_hex,
+      createdAt: nextCreatedAt(session.event.created_at),
+    });
+    await this.#repository.publish(event);
+    this.#notice = { kind: "success", text: "Demo day closed with final Elo and exact snapshot event IDs." };
+  }
+
+  #normalizedRanking(ranking: string[]): string[] {
+    const session = this.#currentSession();
+    const identity = loadIdentity();
+    if (!session || !identity) return [];
+    const valid = new Set(session.state.presented.map((run) => run.pubkey).filter((pubkey) => pubkey !== identity.public_key_hex));
+    return [...new Set(ranking)].filter((pubkey) => valid.has(pubkey));
+  }
+
+  #setRanking(ranking: string[]): void {
+    this.#pendingRanking = this.#normalizedRanking(ranking);
+    if (this.#rankingPublishTimer != null) globalThis.clearTimeout(this.#rankingPublishTimer);
+    this.#rankingPublishTimer = globalThis.setTimeout(() => {
+      this.#rankingPublishTimer = null;
+      const next = this.#pendingRanking;
+      if (!next) return;
+      void this.#publishOwnEntry((content) => ({
+        ...content,
+        ranking: next,
+        updated_at_ms: Date.now(),
+      })).then(() => {
+        this.#pendingRanking = null;
+      }).catch((error: unknown) => {
+        this.#notice = { kind: "error", text: error instanceof Error ? error.message : String(error) };
+      }).finally(() => this.requestRender());
+    }, 650);
+    this.requestRender();
+  }
+
+  #rankingWithMove(pubkey: string, delta: number): string[] {
+    const session = this.#currentSession();
+    const identity = loadIdentity();
+    if (!session || !identity) return [];
+    const ownEntry = this.#repository.entryForParticipant(session.address, identity.public_key_hex);
+    const ranking = this.#normalizedRanking(this.#pendingRanking ?? ownEntry?.content.ranking ?? []);
+    const index = ranking.indexOf(pubkey);
+    if (index < 0) return ranking;
+    const nextIndex = Math.max(0, Math.min(ranking.length - 1, index + delta));
+    ranking.splice(index, 1);
+    ranking.splice(nextIndex, 0, pubkey);
+    return ranking;
+  }
+
+  async #submitZap(formData: FormData): Promise<void> {
+    const modal = this.#zapModal;
+    const session = this.#currentSession();
+    const identity = loadIdentity();
+    if (!modal || !session || !identity) throw new Error("Zap context is unavailable");
+    const entry = this.#repository.entryForParticipant(session.address, modal.entryAuthor);
+    if (!entry) throw new Error("Presenter entry is unavailable");
+    const amountSats = Number.parseInt(String(formData.get("amount") ?? ""), 10);
+    const comment = clampText(String(formData.get("comment") ?? ""), 280);
+    if (!Number.isSafeInteger(amountSats) || amountSats <= 0) throw new Error("Enter a positive whole-satoshi amount");
+    this.#zapModal = { ...modal, amountSats: String(amountSats), comment, status: "loading", error: null };
+    this.requestRender();
+
+    const lookupRelays = dedupe([
+      ...DEFAULT_RELAYS,
+      entry.content.source_profile_relay,
+      ...identity.real_account_relays,
+    ]);
+    const exact = await this.#repository.queryRaw(lookupRelays, {
+      ids: [entry.content.source_profile_event_id],
+      limit: 1,
+    });
+    let sourceProfile = exact[0]?.event ?? null;
+    if (!sourceProfile) {
+      sourceProfile = (await findRealProfile({
+        repository: this.#repository,
+        realPubkey: entry.content.real_pubkey,
+        additionalRelays: [entry.content.source_profile_relay],
+      }))?.event ?? null;
+    }
+    if (!sourceProfile) throw new Error("The presenter’s real profile could not be loaded");
+    const profile = parseProfileMetadata(sourceProfile);
+    const lnurl = lightningUrlFromProfile(profile);
+    if (!lnurl) throw new Error("This presenter has not added a Lightning address to their Nostr profile.");
+    const metadata = await fetchLnurlPayMetadata(profile);
+    const amountMsat = amountSats * 1000;
+    const effectiveComment = comment.slice(0, metadata.commentAllowed || 0);
+    const request = await createPresenterZapRequest({
+      entryEvent: entry.event,
+      presenterRealPubkey: entry.content.real_pubkey,
+      amountMsat,
+      comment: effectiveComment,
+      lnurl,
+      secretKeyHex: identity.secret_key_hex,
+    });
+    const invoice = await requestZapInvoice({
+      metadata,
+      amountMsat,
+      zapRequest: request,
+      comment: effectiveComment,
+    });
+    const webln = (globalThis.window as WindowWithWebLN).webln;
+    if (webln) {
+      try {
+        await webln.enable();
+        await webln.sendPayment(invoice.invoice);
+        this.#zapModal = { ...this.#zapModal, status: "paid", invoice: invoice.invoice, metadata } as ZapModalState;
+        this.requestRender();
+        return;
+      } catch {
+        // Fall back to an invoice that can be copied or opened in another wallet.
+      }
+    }
+    this.#zapModal = { ...this.#zapModal, status: "invoice", invoice: invoice.invoice, metadata } as ZapModalState;
+    this.requestRender();
+  }
+
+  async #downloadCurrentExport(): Promise<void> {
+    const session = this.#currentSession();
+    if (!session || session.state.closed_at_ms === null) throw new Error("The session is not closed");
+    await this.#loadClosedSnapshot(session);
+    const snapshot = this.#closedSnapshots.get(session.address);
+    if (!snapshot) throw new Error("Closed snapshot is unavailable");
+    if (snapshot.missingIds.length > 0) {
+      throw new Error("The exact signed snapshot is incomplete; JSON export is disabled");
+    }
+    const value = buildExport({
+      session,
+      entries: snapshot.entries,
+      profiles: snapshot.profiles,
+      zapReceipts: snapshot.receipts,
+    });
+    downloadJson(exportFilename(), value);
+  }
+
+  async #copyText(value: string, label = "Copied"): Promise<void> {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value);
+    else {
+      const textareaElement = document.createElement("textarea");
+      textareaElement.value = value;
+      textareaElement.style.position = "fixed";
+      textareaElement.style.opacity = "0";
+      document.body.append(textareaElement);
+      textareaElement.select();
+      document.execCommand("copy");
+      textareaElement.remove();
+    }
+    this.#notice = { kind: "success", text: label };
+    this.requestRender();
+  }
+
+  readonly #onRouteChanged = (): void => {
+    this.#activateRoute();
+    this.requestRender();
+  };
+
+  readonly #onInput = (event: Event): void => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) return;
+    if (!target.name) return;
+    const scope = target.dataset.draftScope ?? target.closest<HTMLFormElement>("form")?.dataset.draftScope;
+    if (!scope) return;
+    this.#drafts.set(`${scope}:${target.name}`, target.value);
+  };
+
+  readonly #onSubmit = (event: SubmitEvent): void => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) return;
+    const action = form.dataset.formAction;
+    if (!action) return;
+    event.preventDefault();
+    const data = new FormData(form);
+
+    if (action === "lookup-profile") {
+      const npub = String(data.get("real_npub") ?? "");
+      void this.#withBusy("Searching for your profile", () => this.#lookupProfile(npub));
+      return;
+    }
+    if (action === "lookup-profile-relay") {
+      const relay = validRelayUrl(String(data.get("relay") ?? ""));
+      if (!relay) {
+        this.#notice = { kind: "error", text: "Enter a valid wss:// relay URL." };
+        this.requestRender();
+        return;
+      }
+      const npub = this.#draft("profile", "real_npub", loadIdentity()?.real_npub ?? "");
+      void this.#withBusy("Searching the added relay", () => this.#lookupProfile(npub, relay));
+      return;
+    }
+    if (action === "create-session") {
+      void this.#withBusy("Creating demo day", () => this.#createSession(data));
+      return;
+    }
+    if (action === "join-session") {
+      void this.#withBusy("Joining demo day", () => this.#joinSession(data));
+      return;
+    }
+    if (action === "edit-demo") {
+      void this.#withBusy("Saving demo details", async () => {
+        const demo = this.#formDemo(data);
+        await this.#publishOwnEntry((content) => ({ ...content, demo, updated_at_ms: Date.now() }));
+        this.#clearDraftScope("edit-demo");
+        this.#notice = { kind: "success", text: "Demo details updated." };
+      });
+      return;
+    }
+    if (action === "save-feedback") {
+      const demoAuthor = form.dataset.demoAuthor;
+      if (!demoAuthor) return;
+      const liked = clampText(String(data.get("liked") ?? ""), 280);
+      const learned = clampText(String(data.get("learned") ?? ""), 280);
+      void this.#withBusy("Saving feedback", async () => {
+        const session = this.#currentSession();
+        if (!session?.state.presented.some((run) => run.pubkey === demoAuthor)) throw new Error("Feedback is available only after the demo is marked DONE");
+        await this.#publishOwnEntry((content) => ({
+          ...content,
+          feedback: { ...content.feedback, [demoAuthor]: { liked, learned } },
+          updated_at_ms: Date.now(),
+        }));
+        this.#clearDraftScope(`feedback-${demoAuthor}`);
+        this.#notice = { kind: "success", text: "Feedback saved." };
+      });
+      return;
+    }
+    if (action === "lookup-follow-relay") {
+      const relay = validRelayUrl(String(data.get("relay") ?? ""));
+      const session = this.#currentSession();
+      const snapshot = session ? this.#closedSnapshots.get(session.address) : null;
+      if (!relay || !session || !snapshot) {
+        this.#notice = { kind: "error", text: "Enter a valid wss:// relay URL." };
+        this.requestRender();
+        return;
+      }
+      void this.#loadFollows(session, snapshot, relay);
+      return;
+    }
+    if (action === "submit-zap") {
+      void this.#submitZap(data).catch((error: unknown) => {
+        if (this.#zapModal) {
+          this.#zapModal = {
+            ...this.#zapModal,
+            status: "error",
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+        this.requestRender();
+      });
+    }
+  };
+
+  readonly #onClick = (event: MouseEvent): void => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.classList.contains("modal-backdrop")) {
+      this.#zapModal = null;
+      this.requestRender();
+      return;
+    }
+    const actionElement = target.closest<HTMLElement>("[data-action]");
+    if (!actionElement) return;
+    const action = actionElement.dataset.action;
+    if (!action) return;
+    if (actionElement.tagName === "A") return;
+    event.preventDefault();
+
+    if (action === "dismiss-notice") {
+      this.#notice = null;
+      this.requestRender();
+    } else if (action === "clear-profile-candidate") {
+      this.#profileCandidate = null;
+      this.#profileLookupFailed = false;
+      this.requestRender();
+    } else if (action === "accept-profile") {
+      void this.#withBusy("Copying complete profile", () => this.#acceptProfile());
+    } else if (action === "reset-identity") {
+      if (globalThis.confirm("Reset the local ephemeral identity? Existing demo-day records will remain on relays, but this browser will lose the signing key.")) {
+        resetIdentity();
+        this.#profileCandidate = null;
+        this.#profileLookupFailed = false;
+        this.#drafts.clear();
+        this.#notice = { kind: "info", text: "Local identity reset." };
+        this.requestRender();
+      }
+    } else if (action === "refresh-profile") {
+      void this.#withBusy("Refreshing imported profile", () => this.#refreshImportedProfile());
+    } else if (action === "copy-real-npub") {
+      const value = loadIdentity()?.real_npub;
+      if (value) void this.#copyText(value, "Real npub copied.");
+    } else if (action === "copy-ephemeral-npub") {
+      const value = loadIdentity()?.npub;
+      if (value) void this.#copyText(value, "Ephemeral npub copied.");
+    } else if (action === "copy-nsec") {
+      const value = loadIdentity()?.nsec;
+      if (value) void this.#copyText(value, "Ephemeral nsec copied. Keep it private.");
+    } else if (action === "captain-go") {
+      // Read live select value. Persisted draft may reference demo completed in
+      // previous run, while render has already selected next unpresented option.
+      const selected = this.#root.querySelector<HTMLSelectElement>(
+        'select[name="project"][data-draft-scope="captain"]',
+      )?.value ?? this.#draft("captain", "project");
+      void this.#withBusy("Selecting project", () => this.#mutateSession((state) => ({
+        ...state,
+        current_demo_pubkey: (() => {
+          if (!selected) throw new Error("Select a project before pressing GO!");
+          if (state.presented.some((run) => run.pubkey === selected)) {
+            throw new Error("That demo has already been presented");
+          }
+          return selected;
+        })(),
+        timer_started_at_ms: null,
+      })));
+    } else if (action === "captain-start") {
+      void this.#withBusy("Starting timer", () => this.#mutateSession((state) => ({ ...state, timer_started_at_ms: Date.now() })));
+    } else if (action === "captain-restart") {
+      void this.#withBusy("Restarting timer", () => this.#mutateSession((state) => ({ ...state, timer_started_at_ms: Date.now() })));
+    } else if (action === "captain-done") {
+      void this.#withBusy("Marking demo done", () => this.#mutateSession((state) => {
+        if (!state.current_demo_pubkey || state.timer_started_at_ms == null) throw new Error("Start the timer before marking the demo DONE");
+        return {
+          ...state,
+          presented: [...state.presented, {
+            pubkey: state.current_demo_pubkey,
+            started_at_ms: state.timer_started_at_ms,
+            finished_at_ms: Date.now(),
+          }],
+          current_demo_pubkey: null,
+          timer_started_at_ms: null,
+        };
+      }));
+    } else if (action === "captain-close") {
+      if (globalThis.confirm("Close this demo day? Ranking, feedback, demo editing, and timer controls will become read-only.")) {
+        void this.#withBusy("Closing demo day and taking snapshot", () => this.#closeDemoDay());
+      }
+    } else if (action === "rank-up" || action === "rank-down") {
+      const pubkey = actionElement.dataset.demo;
+      if (pubkey) this.#setRanking(this.#rankingWithMove(pubkey, action === "rank-up" ? -1 : 1));
+    } else if (action === "rank-remove") {
+      const pubkey = actionElement.dataset.demo;
+      if (pubkey) {
+        const session = this.#currentSession();
+        const identity = loadIdentity();
+        const ownEntry = session && identity ? this.#repository.entryForParticipant(session.address, identity.public_key_hex) : null;
+        this.#setRanking(this.#normalizedRanking(this.#pendingRanking ?? ownEntry?.content.ranking ?? []).filter((item) => item !== pubkey));
+      }
+    } else if (action === "rank-add") {
+      const pubkey = actionElement.dataset.demo;
+      if (pubkey) {
+        const session = this.#currentSession();
+        const identity = loadIdentity();
+        const ownEntry = session && identity ? this.#repository.entryForParticipant(session.address, identity.public_key_hex) : null;
+        this.#setRanking([...this.#normalizedRanking(this.#pendingRanking ?? ownEntry?.content.ranking ?? []), pubkey]);
+      }
+    } else if (action === "open-zap") {
+      const entryAuthor = actionElement.dataset.entryAuthor;
+      if (entryAuthor) {
+        this.#clearDraftScope("zap");
+        this.#zapModal = {
+          entryAuthor,
+          amountSats: "21",
+          comment: "",
+          status: "form",
+          invoice: null,
+          error: null,
+          metadata: null,
+        };
+        this.requestRender();
+      }
+    } else if (action === "close-zap") {
+      if (actionElement.classList.contains("modal-backdrop") && target !== actionElement) return;
+      this.#zapModal = null;
+      this.requestRender();
+    } else if (action === "reset-zap") {
+      if (this.#zapModal) this.#zapModal = { ...this.#zapModal, status: "form", error: null, invoice: null };
+      this.requestRender();
+    } else if (action === "copy-invoice") {
+      if (this.#zapModal?.invoice) void this.#copyText(this.#zapModal.invoice, "Lightning invoice copied.");
+    } else if (action === "download-export") {
+      void this.#withBusy("Building AI-ready JSON", () => this.#downloadCurrentExport());
+    } else if (action === "refresh-follows") {
+      const session = this.#currentSession();
+      const snapshot = session ? this.#closedSnapshots.get(session.address) : null;
+      if (session && snapshot) void this.#loadFollows(session, snapshot);
+    } else if (action === "copy-suggestion-npub") {
+      const npub = actionElement.dataset.npub;
+      if (npub) void this.#copyText(npub, "npub copied.");
+    } else if (action === "copy-all-suggestions") {
+      const values = this.#followState?.suggestions.map(npubEncode) ?? [];
+      if (values.length) void this.#copyText(values.join("\n"), "Remaining npubs copied.");
+    }
+  };
+
+  readonly #onDragStart = (event: DragEvent): void => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const item = target.closest<HTMLElement>("[data-drag-demo]");
+    const pubkey = item?.dataset.dragDemo;
+    if (!pubkey) return;
+    this.#draggedDemo = pubkey;
+    event.dataTransfer?.setData("text/plain", pubkey);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  };
+
+  readonly #onDragOver = (event: DragEvent): void => {
+    const target = event.target;
+    if (target instanceof Element && target.closest("[data-drop-ranking], [data-drop-index]")) {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    }
+  };
+
+  readonly #onDrop = (event: DragEvent): void => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const zone = target.closest<HTMLElement>("[data-drop-index], [data-drop-ranking]");
+    if (!zone) return;
+    event.preventDefault();
+    const pubkey = this.#draggedDemo ?? event.dataTransfer?.getData("text/plain");
+    this.#draggedDemo = null;
+    if (!pubkey) return;
+    const session = this.#currentSession();
+    const identity = loadIdentity();
+    const ownEntry = session && identity ? this.#repository.entryForParticipant(session.address, identity.public_key_hex) : null;
+    const ranking = this.#normalizedRanking(this.#pendingRanking ?? ownEntry?.content.ranking ?? []).filter((item) => item !== pubkey);
+    const rawIndex = zone.dataset.dropIndex;
+    const index = rawIndex == null ? ranking.length : Math.max(0, Math.min(ranking.length, Number.parseInt(rawIndex, 10)));
+    ranking.splice(index, 0, pubkey);
+    this.#setRanking(ranking);
+  };
+
+  readonly #onImageError = (event: Event): void => {
+    const image = event.target;
+    if (!(image instanceof HTMLImageElement)) return;
+    const fallback = image.dataset.fallbackAvatar;
+    if (fallback && image.src !== fallback) image.src = fallback;
+  };
+
+  #updateTimers(): void {
+    for (const element of this.#root.querySelectorAll<HTMLElement>("[data-timer-start]")) {
+      const startedAt = Number(element.dataset.timerStart);
+      if (!Number.isFinite(startedAt)) continue;
+      const timer = formatTimer(Date.now() - startedAt);
+      const phase = element.querySelector<HTMLElement>("[data-timer-phase]");
+      const value = element.querySelector<HTMLElement>("[data-timer-value]");
+      if (phase) phase.textContent = timer.phase;
+      if (value) value.textContent = timer.value;
+      element.classList.remove("timer-presentation", "timer-questions", "timer-overtime");
+      element.classList.add(`timer-${timer.className}`);
+    }
+  }
+}
