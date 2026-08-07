@@ -61,6 +61,18 @@ export function profileComponent({
   return `<span class="${escapeAttr(classes)}">${avatar({ picture, pubkey, name, size })}<strong class="profile-name">${escapeHtml(name)}</strong></span>`;
 }
 
+export function captainCard({
+  picture,
+  pubkey,
+  name,
+}: {
+  picture: string | null;
+  pubkey: string;
+  name: string;
+}): string {
+  return `<section class="panel captain-profile-card"><span class="eyebrow">This week's captain</span>${profileComponent({ picture, pubkey, name, size: "sm" })}</section>`;
+}
+
 export function button(label: string, action: string, options: {
   className?: string;
   disabled?: boolean;

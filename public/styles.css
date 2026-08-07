@@ -1059,6 +1059,30 @@ code,
   color: var(--muted);
 }
 
+.demo-editor > summary {
+  width: fit-content;
+  list-style: none;
+}
+
+.demo-editor > summary::-webkit-details-marker {
+  display: none;
+}
+
+.demo-editor[open] > summary {
+  margin-bottom: 15px;
+}
+
+.project-details > summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.project-feedback {
+  display: grid;
+  gap: 15px;
+  margin-top: 15px;
+}
+
 .project-stats {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

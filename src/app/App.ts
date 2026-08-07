@@ -61,7 +61,7 @@ import {
   requestZapInvoice,
   type LnurlPayMetadata,
 } from "../nostr/zaps.js";
-import { button, escapeAttr, escapeHtml, field, identiconDataUri, profileComponent, textarea } from "../ui/html.js";
+import { button, captainCard, escapeAttr, escapeHtml, field, identiconDataUri, profileComponent, textarea } from "../ui/html.js";
 import { navigate, parseRoute, sessionNaddr, type AppRoute } from "./router.js";
 
 interface Notice {
@@ -235,7 +235,7 @@ export class DemoDayApp {
         `}
         ${this.#notice?.kind === "error" ? `<div class="notice notice-error" role="alert">${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
         <main class="${this.#route.name === "display" ? "display-main" : "page"}">${page}</main>
-        ${this.#route.name === "display" ? "" : `<footer><span>No backend. Signed state on Nostr.</span><nav><a href="#/">Active demo days</a><a href="#/advanced">Advanced</a></nav></footer>`}
+        ${this.#route.name === "display" ? "" : `<footer><span>No backend. Signed state on Nostr.</span><nav>${this.#route.name === "session" ? `<a href="#/display/${escapeAttr(this.#route.naddr)}">Open display</a>` : ""}<a href="#/">Active demo days</a><a href="#/advanced">Advanced</a></nav></footer>`}
         ${this.#busy ? `<div class="busy-overlay" role="status"><span class="spinner"></span><strong>${escapeHtml(this.#busy)}</strong></div>` : ""}
         ${this.#renderZapModal()}
       </div>
@@ -364,7 +364,7 @@ export class DemoDayApp {
     return `<section class="narrow-page join-page">
       <a class="back-link" href="#/">← Active demo days</a>
       <h1>${escapeHtml(session.state.name)}</h1>
-      <section class="panel captain-profile-card"><span class="eyebrow">This week's captain</span>${profileComponent({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name, size: "sm" })}</section>
+      ${captainCard({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name })}
       <h2 class="join-form-heading">Tell us about your demo ${escapeHtml(participant.name)}</h2>
       <form class="panel form-stack" data-form-action="join-session" data-draft-scope="join">
         ${field({ label: "Project name", name: "demo_name", value: this.#draft("join", "demo_name"), required: true, maxlength: 140 })}
@@ -408,26 +408,18 @@ export class DemoDayApp {
       ? entries.find((entry) => entry.author === session.state.current_demo_pubkey) ?? null
       : null;
     const elo = calculateElo(completed, entries);
-    return `<section class="session-layout">
-      <div class="session-main">
-        <div class="session-title-row"><div><a class="back-link" href="#/">← Active demo days</a><span class="eyebrow">${isCaptain ? "Captain session" : "Participant session"}</span><h1>${escapeHtml(session.state.name)}</h1><p>Captain ${escapeHtml(captain.name)} · ${entries.length} participants</p></div><a class="button button-secondary" href="#/display/${escapeAttr(sessionNaddr(session.event.pubkey, session.d))}">Open display</a></div>
-        ${this.#renderCurrentDemo(session, current)}
-        ${isCaptain ? this.#renderCaptainControls(session, entries) : ""}
-        ${this.#renderLeaderboard(elo.rows, entries, session)}
-        ${this.#renderRankingEditor(session, entries, ownEntry)}
-        ${this.#renderProjectDirectory(session, entries, ownEntry)}
-      </div>
-      <aside class="session-sidebar">
-        ${this.#renderOwnDemoEditor(session, ownEntry)}
-        <div class="panel protocol-note"><span class="eyebrow">Session address</span><code>${escapeHtml(session.address)}</code><p>By selecting this session, this client trusts only replacements signed by ${escapeHtml(shorten(session.event.pubkey))} at this address.</p></div>
-      </aside>
+    return `<section class="session-main">
+      <div class="session-title-row"><div>${isCaptain ? `<span class="eyebrow">Captain session</span>` : ""}<h1>${escapeHtml(session.state.name)}</h1>${captainCard({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name })}<p>${entries.length} participants</p></div></div>
+      ${this.#renderCurrentDemo(session, current)}
+      ${isCaptain ? this.#renderCaptainControls(session, entries) : ""}
+      ${this.#renderLeaderboard(elo.rows, entries, session)}
+      ${this.#renderRankingEditor(session, entries, ownEntry)}
+      ${this.#renderProjectDirectory(session, entries, ownEntry)}
     </section>`;
   }
 
   #renderCurrentDemo(session: ParsedSession, current: ParsedEntry | null): string {
-    if (!current) {
-      return `<section class="current-demo between"><div><span class="eyebrow">Between demonstrations</span><h2>Waiting for the captain to select a project</h2><p>Completed demos are ready for feedback and ranking.</p></div><div class="between-count"><strong>${session.state.presented.length}</strong><span>completed</span></div></section>`;
-    }
+    if (!current) return "";
     const profile = this.#profile(current.author);
     const metadata = parseProfileMetadata(this.#repository.getProfile(current.author));
     const hasZap = lightningUrlFromProfile(metadata) !== null;
@@ -484,15 +476,14 @@ export class DemoDayApp {
     const entryMap = new Map(entries.map((entry) => [entry.author, entry]));
     const receipts = this.#receiptsForSession(session.address, entries);
     return `<section class="panel leaderboard">
-      <div class="panel-heading"><div><span class="eyebrow">Live Elo</span><h2>Leaderboard</h2></div><span>${session.state.presented.length} completed</span></div>
-      ${rows.length === 0 ? `<p class="empty-copy">Complete at least one demo to start the leaderboard.</p>` : `<div class="table-scroll"><table><thead><tr><th>Rank</th><th>Project</th><th>Presenter</th><th>Elo</th><th>Pairwise votes</th><th>Zaps</th><th>Sats</th></tr></thead><tbody>${rows.map((row, index) => {
+      <div class="panel-heading"><h2>Leaderboard</h2><span>${session.state.presented.length} completed</span></div>
+      ${rows.length === 0 ? "" : `<div class="table-scroll"><table><thead><tr><th>Rank</th><th>Project</th><th>Presenter</th><th>Elo</th><th>Pairwise votes</th><th>Zaps</th><th>Sats</th></tr></thead><tbody>${rows.map((row, index) => {
         const entry = entryMap.get(row.pubkey);
         const profile = this.#profile(row.pubkey);
         const demoReceipts = receipts.filter((receipt) => receipt.targetEntryAddress === entry?.address);
         const sats = demoReceipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
         return `<tr><td><span class="rank-badge">${index + 1}</span></td><td><strong>${escapeHtml(entry?.content.demo.name ?? shorten(row.pubkey))}</strong></td><td>${profileComponent({ picture: profile.picture, pubkey: row.pubkey, name: profile.name, size: "sm" })}</td><td class="numeric">${Math.round(row.rating)}</td><td class="numeric">${row.pairwiseVotes}</td><td class="numeric">${demoReceipts.length}</td><td class="numeric">${sats.toLocaleString()}</td></tr>`;
       }).join("")}</tbody></table></div>`}
-      <p class="fine-print">Elo is recalculated from the complete latest ranking dataset in presentation-pair order. Zaps do not affect ratings.</p>
     </section>`;
   }
 
@@ -509,10 +500,9 @@ export class DemoDayApp {
       return `<li draggable="true" data-drag-demo="${escapeAttr(pubkey)}" data-drop-index="${index}"><span class="drag-handle" title="Drag to reorder">⋮⋮</span><span class="ranking-number">${index + 1}</span><div><strong>${escapeHtml(entry?.content.demo.name ?? shorten(pubkey))}</strong><small>${escapeHtml(this.#profile(pubkey).name)}</small></div><div class="ranking-actions">${button("↑", "rank-up", { className: "icon-button", disabled: index === 0, attrs: `data-demo="${escapeAttr(pubkey)}"` })}${button("↓", "rank-down", { className: "icon-button", disabled: index === ranking.length - 1, attrs: `data-demo="${escapeAttr(pubkey)}"` })}${button("×", "rank-remove", { className: "icon-button", attrs: `data-demo="${escapeAttr(pubkey)}"` })}</div></li>`;
     };
     return `<section class="panel ranking-editor">
-      <div class="panel-heading"><div><span class="eyebrow">Your preference</span><h2>Personal ranking</h2></div><span>Drag to reorder</span></div>
-      ${completed.length === 0 ? `<p class="empty-copy">Completed demos other than your own will appear here.</p>` : `<ol class="ranking-list" data-drop-ranking>${ranking.map(item).join("")}<li class="drop-tail" data-drop-index="${ranking.length}">Drop here</li></ol>`}
-      ${unranked.length ? `<div class="unranked"><h3>Not yet ranked</h3>${unranked.map((pubkey) => `<div class="unranked-item" draggable="true" data-drag-demo="${escapeAttr(pubkey)}"><span>${escapeHtml(entryMap.get(pubkey)?.content.demo.name ?? shorten(pubkey))}</span>${button("Add to ranking", "rank-add", { className: "button button-quiet", attrs: `data-demo="${escapeAttr(pubkey)}"` })}</div>`).join("")}</div>` : ""}
-      <p class="fine-print">Rankings may be incomplete. Your own project is ignored, and presenters cannot vote on pairs containing their own project.</p>
+      <div class="panel-heading"><h2>Rank the demos</h2><span>Drag and drop</span></div>
+      ${completed.length === 0 ? "" : `<ol class="ranking-list" data-drop-ranking>${ranking.map(item).join("")}<li class="drop-tail" data-drop-index="${ranking.length}">Drop here</li></ol>`}
+      ${unranked.length ? `<div class="unranked">${unranked.map((pubkey) => `<div class="unranked-item" draggable="true" data-drag-demo="${escapeAttr(pubkey)}"><span>${escapeHtml(entryMap.get(pubkey)?.content.demo.name ?? shorten(pubkey))}</span>${button("Add to ranking", "rank-add", { className: "button button-quiet", attrs: `data-demo="${escapeAttr(pubkey)}"` })}</div>`).join("")}</div>` : ""}
     </section>`;
   }
 
@@ -528,7 +518,7 @@ export class DemoDayApp {
     });
     const receipts = this.#receiptsForSession(session.address, entries);
     return `<section class="project-section">
-      <div class="section-heading"><div><span class="eyebrow">Directory</span><h2>Projects and feedback</h2></div><span>${entries.length} projects</span></div>
+      <div class="section-heading"><h2>Waiting to present</h2><span>${entries.length} projects</span></div>
       <div class="project-grid">${sorted.map((entry) => {
         const profile = this.#profile(entry.author);
         const run = session.state.presented.find((item) => item.pubkey === entry.author) ?? null;
@@ -537,6 +527,7 @@ export class DemoDayApp {
           return response?.liked.trim() ? [{ reviewer, response }] : [];
         });
         const ownFeedback = ownEntry.content.feedback[entry.author] ?? { liked: "" };
+        const isLive = session.state.current_demo_pubkey === entry.author;
         const metadata = parseProfileMetadata(this.#repository.getProfile(entry.author));
         const canZap = lightningUrlFromProfile(metadata) !== null;
         const projectReceipts = receipts.filter((receipt) => receipt.targetEntryAddress === entry.address);
@@ -544,25 +535,24 @@ export class DemoDayApp {
         return `<article class="project-card ${run ? "completed" : "pending"}">
           <div class="project-card-head"><div><span class="eyebrow">${run ? `Presented #${(position.get(entry.author) ?? 0) + 1}` : "Not presented"}</span><h3>${escapeHtml(entry.content.demo.name)}</h3>${profileComponent({ picture: profile.picture, pubkey: entry.author, name: profile.name })}</div></div>
           <p class="project-description">${escapeHtml(entry.content.demo.description)}</p>
-          <div class="project-stats"><span>⚡ ${projectReceipts.length} zaps</span><span>${sats.toLocaleString()} sats</span><span>${feedback.length} feedback</span></div>
-          <div class="project-links">${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}${canZap && entry.author !== ownEntry.author ? button("⚡ Zap", "open-zap", { className: "button button-zap button-small", attrs: `data-entry-author="${escapeAttr(entry.author)}"` }) : ""}</div>
-          ${run && entry.author !== ownEntry.author ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}"><h4>Your feedback</h4>${textarea({ label: "What did you like?", name: "liked", value: this.#draft(`feedback-${entry.author}`, "liked", ownFeedback.liked), maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit">Save feedback</button></form>` : ""}
-          ${feedback.length ? `<details class="feedback-results"><summary>Read feedback (${feedback.length})</summary><div><h4>What people liked</h4>${feedback.map((item) => { const reviewer = this.#profile(item.reviewer.author); return feedbackQuote(item.response.liked, item.reviewer.author, reviewer.name, reviewer.picture); }).join("")}</div></details>` : ""}
+          ${isLive ? `<div class="project-stats"><span>⚡ ${projectReceipts.length} zaps</span><span>${sats.toLocaleString()} sats</span></div>` : ""}
+          <div class="project-links">${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}${isLive && canZap && entry.author !== ownEntry.author ? button("⚡ Zap", "open-zap", { className: "button button-zap button-small", attrs: `data-entry-author="${escapeAttr(entry.author)}"` }) : ""}</div>
+          ${entry.author === ownEntry.author ? this.#renderOwnDemoEditor(ownEntry) : ""}
+          ${run ? `<details class="project-details"><summary>View project details</summary><div class="project-feedback"><span>${feedback.length} feedback</span>${entry.author !== ownEntry.author ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}"><h4>Your feedback</h4>${textarea({ label: "What did you like?", name: "liked", value: this.#draft(`feedback-${entry.author}`, "liked", ownFeedback.liked), maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit">Save feedback</button></form>` : ""}${feedback.length ? `<div class="feedback-results"><h4>What people liked</h4>${feedback.map((item) => { const reviewer = this.#profile(item.reviewer.author); return feedbackQuote(item.response.liked, item.reviewer.author, reviewer.name, reviewer.picture); }).join("")}</div>` : ""}</div></details>` : ""}
         </article>`;
       }).join("")}</div>
     </section>`;
   }
 
-  #renderOwnDemoEditor(session: ParsedSession, ownEntry: ParsedEntry): string {
-    return `<section class="panel"><div class="panel-heading"><div><span class="eyebrow">Your entry</span><h2>Edit demo</h2></div><span>Auto-replaces one record</span></div>
+  #renderOwnDemoEditor(ownEntry: ParsedEntry): string {
+    return `<details class="demo-editor"><summary class="button button-secondary button-small">Edit demo</summary>
       <form class="form-stack" data-form-action="edit-demo" data-draft-scope="edit-demo">
         ${field({ label: "Demo name", name: "demo_name", value: this.#draft("edit-demo", "demo_name", ownEntry.content.demo.name), required: true, maxlength: 140 })}
         ${textarea({ label: "Description", name: "demo_description", value: this.#draft("edit-demo", "demo_description", ownEntry.content.demo.description), required: true, maxlength: 4000, rows: 5 })}
         ${field({ label: "Link — optional", name: "demo_link", value: this.#draft("edit-demo", "demo_link", ownEntry.content.demo.link ?? ""), type: "url" })}
         <button class="button button-secondary" type="submit">Save demo details</button>
       </form>
-      <p class="fine-print">You may edit until the captain closes the session. The latest signed replacement is shown everywhere, including while selected.</p>
-    </section>`;
+    </details>`;
   }
 
   #renderIdentityPanel(identity: LocalIdentityV1): string {
