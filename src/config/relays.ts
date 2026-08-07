@@ -21,6 +21,11 @@ export const DEFAULT_RELAYS = Object.freeze([
   "wss://purplepag.es",
 ] as const);
 
+export const PROFILE_SEARCH_RELAYS = Object.freeze([
+  "wss://relay.nostr.band",
+  "wss://search.nos.today",
+] as const);
+
 export const IDENTITY_STORAGE_KEY = "sedd.identity.v1";
 export const PENDING_PUBLISH_STORAGE_KEY = "sedd.pending-publishes.v1";
 export const SELECTED_SESSION_STORAGE_KEY = "sedd.selected-session.v1";

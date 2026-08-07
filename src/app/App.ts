@@ -3,6 +3,7 @@ import {
   DEFAULT_RELAYS,
   FOLLOW_LIST_KIND,
   PRESENTATION_MS,
+  PROFILE_SEARCH_RELAYS,
   QUESTIONS_MS,
 } from "../config/relays.js";
 import { calculateElo, rankElo } from "../domain/elo.js";
@@ -47,6 +48,7 @@ import {
   resetIdentity,
 } from "../nostr/identity.js";
 import {
+  canonicalProfileSearchEvents,
   findRealProfile,
   importProfile,
   parseProfileMetadata,
@@ -94,6 +96,13 @@ interface ProfileCandidate {
   relay: string;
   metadata: ProfileMetadata;
   addedRelay: boolean;
+}
+
+interface ProfileSearchResult {
+  candidate: ProfileCandidate;
+  name: string;
+  username: string;
+  nip05: string;
 }
 
 interface ClosedSnapshot {
@@ -190,6 +199,11 @@ export class DemoDayApp {
   #profileCandidate: ProfileCandidate | null = null;
   #profileLookupFailed = false;
   #profileLookupNpub: string | null = null;
+  #profileSearchStatus: "idle" | "loading" | "ready" | "error" = "idle";
+  #profileSearchResults: ProfileSearchResult[] = [];
+  #profileSearchQuery = "";
+  #profileSearchTimer: number | null = null;
+  #profileSearchSequence = 0;
   #drafts = new Map<string, string>();
   #requestedProfiles = new Set<string>();
   #sessionUnsubscribe: (() => void) | null = null;
@@ -372,10 +386,30 @@ export class DemoDayApp {
       </div>`;
     }
 
+    const searchResults = this.#profileSearchResults.map((result) => {
+      const candidate = result.candidate;
+      const details = [result.username ? `@${result.username}` : "", result.nip05].filter(Boolean).join(" · ");
+      return `<button type="button" class="profile-search-result" role="option" data-action="select-profile-search-result" data-pubkey="${escapeAttr(candidate.realPubkey)}">
+        ${profileComponent({ picture: profileImage(candidate.metadata), pubkey: candidate.realPubkey, name: result.name, size: "md" })}
+        ${details ? `<span class="profile-search-details">${escapeHtml(details)}</span>` : ""}
+        <code>${escapeHtml(shorten(candidate.realNpub, 12, 8))}</code>
+      </button>`;
+    }).join("");
+    const searchPanel = this.#profileSearchStatus === "loading"
+      ? `<div class="profile-search-message" role="status"><span class="spinner"></span> Searching profiles…</div>`
+      : this.#profileSearchStatus === "error"
+        ? `<div class="profile-search-message" role="status">Username search unavailable. You can still paste an npub.</div>`
+        : this.#profileSearchStatus === "ready" && searchResults
+          ? `<div class="profile-search-results" role="listbox" aria-label="Matching Nostr profiles">${searchResults}</div>`
+          : this.#profileSearchStatus === "ready" && this.#profileSearchQuery
+            ? `<div class="profile-search-message" role="status">No matching profiles found. Try another name or paste an npub.</div>`
+            : "";
+
     return `<div class="panel form-stack">
       <form data-form-action="lookup-profile" data-draft-scope="profile">
-        <div class="input-action-row">${field({ label: "Your usual Nostr npub", name: "real_npub", value: this.#draft("profile", "real_npub", identity.real_npub ?? ""), placeholder: "npub1…", required: true, autocomplete: "off" })}${button('<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h6m-5-2h4a2 2 0 0 1 2 2v1h2a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2V5a2 2 0 0 1 2-2Zm2 7v7m-3-3 3 3 3-3"/></svg>', "paste-profile-npub", { className: "input-paste-button", attrs: 'aria-label="Paste npub from clipboard" title="Paste npub from clipboard"' })}</div>
+        <div class="input-action-row">${field({ label: "Find your Nostr profile", name: "real_npub", value: this.#draft("profile", "real_npub", identity.real_npub ?? ""), placeholder: "Type your username or paste npub1…", required: true, autocomplete: "off", help: "Type at least 4 characters to search." })}${button('<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h6m-5-2h4a2 2 0 0 1 2 2v1h2a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2V5a2 2 0 0 1 2-2Zm2 7v7m-3-3 3 3 3-3"/></svg>', "paste-profile-npub", { className: "input-paste-button", attrs: 'aria-label="Paste npub from clipboard" title="Paste npub from clipboard"' })}</div>
       </form>
+      ${searchPanel}
       ${this.#profileLookupFailed ? `<div class="relay-fallback"><h3>Profile not found on the default relays</h3><p>Paste a relay where your usual Nostr profile can be found.</p><form data-form-action="lookup-profile-relay" data-draft-scope="profile-relay">${field({ label: "Profile relay", name: "relay", value: this.#draft("profile-relay", "relay"), placeholder: "wss://relay.example.com", required: true })}<button class="button button-secondary" type="submit">Search relay</button></form></div>` : ""}
     </div>`;
   }
@@ -602,11 +636,12 @@ export class DemoDayApp {
     const entryMap = new Map(entries.map((entry) => [entry.author, entry]));
     const item = (pubkey: string, index: number): string => {
       const entry = entryMap.get(pubkey);
-      return `<li draggable="true" data-drag-demo="${escapeAttr(pubkey)}" data-drop-index="${index}"><span class="drag-handle" title="Drag to reorder">⋮⋮</span><span class="ranking-number">${index + 1}</span><div><strong>${escapeHtml(entry?.content.demo.name ?? shorten(pubkey))}</strong><small>${escapeHtml(this.#profile(pubkey).name)}</small></div><div class="ranking-actions">${button("↑", "rank-up", { className: "icon-button", disabled: index === 0, attrs: `data-demo="${escapeAttr(pubkey)}"` })}${button("↓", "rank-down", { className: "icon-button", disabled: index === ranking.length - 1, attrs: `data-demo="${escapeAttr(pubkey)}"` })}</div></li>`;
+      const profile = this.#profile(pubkey);
+      return `<li draggable="true" data-drag-demo="${escapeAttr(pubkey)}" data-drop-index="${index}"><span class="drag-handle" title="Drag to reorder">⋮⋮</span><span class="ranking-number">${index + 1}</span><div class="ranking-card-content"><strong>${escapeHtml(entry?.content.demo.name ?? shorten(pubkey))}</strong>${profileComponent({ picture: profile.picture, pubkey, name: profile.name, size: "sm" })}</div><div class="ranking-actions">${button("↑", "rank-up", { className: "icon-button", disabled: index === 0, attrs: `data-demo="${escapeAttr(pubkey)}"` })}${button("↓", "rank-down", { className: "icon-button", disabled: index === ranking.length - 1, attrs: `data-demo="${escapeAttr(pubkey)}"` })}</div></li>`;
     };
     return `<section class="panel ranking-editor">
       <div class="panel-heading"><h2>Rank the demos</h2><span>Drag and drop</span></div>
-      ${completed.length === 0 ? "" : `<ol class="ranking-list" data-drop-ranking>${ranking.map(item).join("")}<li class="drop-tail" data-drop-index="${ranking.length}">Drop here</li></ol>`}
+      ${completed.length === 0 ? "" : `<ol class="ranking-list" data-drop-ranking>${ranking.map(item).join("")}</ol>`}
     </section>`;
   }
 
@@ -1518,6 +1553,71 @@ export class DemoDayApp {
     });
   }
 
+  #resetProfileSearch(): void {
+    if (this.#profileSearchTimer != null) globalThis.clearTimeout(this.#profileSearchTimer);
+    this.#profileSearchTimer = null;
+    this.#profileSearchSequence += 1;
+    this.#profileSearchStatus = "idle";
+    this.#profileSearchResults = [];
+    this.#profileSearchQuery = "";
+  }
+
+  #scheduleProfileSearch(value: string): void {
+    if (this.#profileSearchTimer != null) globalThis.clearTimeout(this.#profileSearchTimer);
+    this.#profileSearchTimer = null;
+    const query = value.trim();
+    const sequence = ++this.#profileSearchSequence;
+    if (query.length < 4 || query.toLowerCase().startsWith("npub1")) {
+      this.#profileSearchStatus = "idle";
+      this.#profileSearchResults = [];
+      this.#profileSearchQuery = "";
+      this.render();
+      return;
+    }
+    this.#profileSearchStatus = "loading";
+    this.#profileSearchResults = [];
+    this.#profileSearchQuery = query;
+    this.render();
+    this.#profileSearchTimer = globalThis.setTimeout(() => {
+      this.#profileSearchTimer = null;
+      void this.#searchProfiles(query, sequence);
+    }, 350);
+  }
+
+  async #searchProfiles(query: string, sequence: number): Promise<void> {
+    try {
+      const events = await this.#repository.queryRaw(PROFILE_SEARCH_RELAYS, {
+        kinds: [0],
+        search: query,
+        limit: 40,
+      });
+      if (sequence !== this.#profileSearchSequence) return;
+      this.#profileSearchResults = canonicalProfileSearchEvents(events).map((found): ProfileSearchResult => {
+        const metadata = parseProfileMetadata(found.event);
+        const realNpub = npubEncode(found.event.pubkey);
+        return {
+          candidate: {
+            realNpub,
+            realPubkey: found.event.pubkey,
+            event: found.event,
+            relay: found.relay,
+            metadata,
+            addedRelay: true,
+          },
+          name: profileDisplayName(metadata, realNpub),
+          username: typeof metadata.name === "string" ? metadata.name.trim() : "",
+          nip05: typeof metadata.nip05 === "string" ? metadata.nip05.trim() : "",
+        };
+      });
+      this.#profileSearchStatus = "ready";
+    } catch {
+      if (sequence !== this.#profileSearchSequence) return;
+      this.#profileSearchResults = [];
+      this.#profileSearchStatus = "error";
+    }
+    this.render();
+  }
+
   readonly #onRouteChanged = (): void => {
     this.#activateRoute();
     this.requestRender();
@@ -1531,7 +1631,10 @@ export class DemoDayApp {
     if (!scope) return;
     this.#drafts.set(`${scope}:${target.name}`, target.value);
     if (target.name === "liked") this.#updateFeedbackSubmit(target);
-    if (scope === "profile" && target.name === "real_npub") this.#maybeImportProfileNpub(target.value);
+    if (scope === "profile" && target.name === "real_npub") {
+      if (!this.#maybeImportProfileNpub(target.value)) this.#scheduleProfileSearch(target.value);
+      else this.#resetProfileSearch();
+    }
   };
 
   #updateFeedbackSubmit(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): void {
@@ -1697,6 +1800,15 @@ export class DemoDayApp {
       }
     } else if (action === "paste-profile-npub") {
       void this.#pasteProfileNpub();
+    } else if (action === "select-profile-search-result") {
+      const result = this.#profileSearchResults.find((item) => item.candidate.realPubkey === actionElement.dataset.pubkey);
+      if (result) {
+        this.#profileCandidate = result.candidate;
+        this.#drafts.set("profile:real_npub", result.candidate.realNpub);
+        this.#profileLookupFailed = false;
+        this.#resetProfileSearch();
+        this.requestRender();
+      }
     } else if (action === "confirm-profile") {
       const candidate = this.#profileCandidate;
       if (candidate) void this.#withBusy("Importing profile", () => this.#importProfile(candidate));

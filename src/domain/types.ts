@@ -25,6 +25,7 @@ export interface NostrFilter {
   since?: number;
   until?: number;
   limit?: number;
+  search?: string;
   [tagFilter: `#${string}`]: string[] | number[] | undefined;
 }
 

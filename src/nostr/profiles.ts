@@ -39,6 +39,25 @@ function chooseLatest(events: RelayEvent[]): RelayEvent | null {
   return selected;
 }
 
+export function canonicalProfileSearchEvents(events: RelayEvent[], limit = 8): RelayEvent[] {
+  const latestByPubkey = new Map<string, RelayEvent>();
+  for (const item of events) {
+    const current = latestByPubkey.get(item.event.pubkey);
+    if (!current || compareReplaceable(item.event, current.event)) latestByPubkey.set(item.event.pubkey, item);
+  }
+
+  const canonicalByContent = new Map<string, RelayEvent>();
+  for (const item of latestByPubkey.values()) {
+    const current = canonicalByContent.get(item.event.content);
+    if (!current
+      || item.event.created_at < current.event.created_at
+      || item.event.created_at === current.event.created_at && item.event.id < current.event.id) {
+      canonicalByContent.set(item.event.content, item);
+    }
+  }
+  return [...canonicalByContent.values()].slice(0, limit);
+}
+
 export async function findRealProfile({
   repository,
   realPubkey,

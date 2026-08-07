@@ -49,6 +49,7 @@ import {
   zapTotals,
 } from "../dist/assets/nostr/zaps.js";
 import { getTag } from "../dist/assets/domain/utils.js";
+import { canonicalProfileSearchEvents } from "../dist/assets/nostr/profiles.js";
 import {
   APP_KIND,
   DEFAULT_RELAYS,
@@ -58,6 +59,19 @@ import {
 
 const key = (number) => number.toString(16).padStart(64, "0");
 const sessionD = "sedd-session:0123456789abcdef0123456789abcdef";
+
+test("profile search collapses copied metadata onto original oldest profile", () => {
+  const content = JSON.stringify({ name: "gsovereignty", nip05: "gsovereignty@nostrovia.org" });
+  const profile = (pubkey, createdAt, id) => ({
+    relay: "wss://search.example",
+    event: { id, pubkey, created_at: createdAt, kind: 0, tags: [], content, sig: "00".repeat(64) },
+  });
+  const original = profile(key(3), 100, "03".repeat(32));
+  const copyOne = profile(key(4), 200, "04".repeat(32));
+  const copyTwo = profile(key(5), 300, "05".repeat(32));
+
+  assert.deepEqual(canonicalProfileSearchEvents([copyTwo, copyOne, original]), [original]);
+});
 
 test("SHA-256 works when SubtleCrypto is unavailable on an insecure LAN origin", async () => {
   const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
