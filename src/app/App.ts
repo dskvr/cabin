@@ -64,6 +64,7 @@ import {
   type LnurlPayMetadata,
 } from "../nostr/zaps.js";
 import { button, captainCard, escapeAttr, escapeHtml, field, identiconDataUri, profileComponent, textarea } from "../ui/html.js";
+import { activateMotion } from "../ui/motion.js";
 import { navigate, parseRoute, sessionNaddr, type AppRoute } from "./router.js";
 
 declare const qrcode: (typeNumber: number, errorCorrectionLevel: "M") => {
@@ -222,6 +223,12 @@ export class DemoDayApp {
   #renderDeferred = false;
   #receiptCache = new Map<string, { key: string; receipts: ZapReceipt[] }>();
   #receiptLoading = new Set<string>();
+  #cleanupMotion: (() => void) | null = null;
+  #motionRouteKey = "";
+  #motionModalKey = "";
+  #announcedNotice = "";
+  #announcedBusy = "";
+  #announcedProfileSearch = "";
 
   constructor(root: HTMLElement, repository: NostrRepository) {
     this.#root = root;
@@ -269,7 +276,12 @@ export class DemoDayApp {
   }
 
   render(): void {
+    this.#cleanupMotion?.();
+    this.#cleanupMotion = null;
     const active = this.#root.ownerDocument.activeElement;
+    const focusedElementSelector = active instanceof HTMLElement && this.#root.contains(active)
+      ? this.#focusSelector(active)
+      : null;
     const focusedControl = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement
       ? {
           name: active.name,
@@ -283,8 +295,21 @@ export class DemoDayApp {
     const currentProfile = identity ? this.#profile(identity.public_key_hex) : null;
     const connected = this.#repository.connectedRelays().length;
     const pending = this.#repository.pendingCount();
+    const motionRouteKey = this.#route.name === "session" || this.#route.name === "display"
+      ? `${this.#route.name}:${this.#route.naddr}`
+      : this.#route.name;
+    const animateEntrance = motionRouteKey !== this.#motionRouteKey;
+    this.#motionRouteKey = motionRouteKey;
+    const motionModalKey = this.#zapModal ? `${this.#zapModal.entryAuthor}:${this.#zapModal.status}` : "";
+    const animateModal = Boolean(motionModalKey) && motionModalKey !== this.#motionModalKey;
+    this.#motionModalKey = motionModalKey;
+    const announceNotice = this.#notice?.kind === "error" && this.#notice.text !== this.#announcedNotice;
+    const announceBusy = Boolean(this.#busy) && this.#busy !== this.#announcedBusy;
+    this.#announcedNotice = this.#notice?.kind === "error" ? this.#notice.text : "";
+    this.#announcedBusy = this.#busy ?? "";
     this.#root.innerHTML = `
       <div class="app-shell ${this.#route.name === "display" ? "display-shell" : ""}">
+        <canvas class="relay-field" aria-hidden="true"></canvas>
         ${this.#route.name === "display" ? "" : `
           <header class="topbar">
             <a class="brand" href="#/" aria-label="Sovereign Engineering Demo Day home">
@@ -298,13 +323,14 @@ export class DemoDayApp {
             </div>
           </header>
         `}
-        ${this.#notice?.kind === "error" ? `<div class="notice notice-error" role="alert">${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
+        ${this.#notice?.kind === "error" ? `<div class="notice notice-error" ${announceNotice ? 'role="alert"' : ""}>${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
         <main class="${this.#route.name === "display" ? "display-main" : "page"}">${page}</main>
         ${this.#route.name === "display" ? "" : `<footer><nav>${this.#route.name === "session" ? `<a href="#/display/${escapeAttr(this.#route.naddr)}" data-fullscreen-display>Front of room display</a>` : ""}<a href="#/create">I AM THE CAPTAIN NOW</a><a href="#/">Active demo days</a><a href="#/advanced">Advanced</a></nav></footer>`}
-        ${this.#busy ? `<div class="busy-overlay" role="status"><span class="spinner"></span><strong>${escapeHtml(this.#busy)}</strong></div>` : ""}
+        ${this.#busy ? `<div class="busy-overlay" ${announceBusy ? 'role="status"' : ""}><span class="spinner"></span><strong>${escapeHtml(this.#busy)}</strong></div>` : ""}
         ${this.#renderZapModal()}
       </div>
     `;
+    this.#cleanupMotion = activateMotion(this.#root, animateEntrance, animateModal);
     if (focusedControl?.name) {
       const replacement = [...this.#root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input, textarea, select")]
         .find((control) => control.name === focusedControl.name
@@ -315,9 +341,31 @@ export class DemoDayApp {
           replacement.setSelectionRange(focusedControl.selectionStart, focusedControl.selectionEnd);
         }
       }
+    } else if (focusedElementSelector) {
+      this.#root.querySelector<HTMLElement>(focusedElementSelector)?.focus({ preventScroll: true });
     }
     this.#updateTimers();
     this.#ensureRouteData();
+  }
+
+  #focusSelector(element: HTMLElement): string {
+    if (element.dataset.action) {
+      return Object.entries(element.dataset).reduce((selector, [key, value]) => {
+        const attribute = key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+        return `${selector}[data-${attribute}="${CSS.escape(value ?? "")}"]`;
+      }, "");
+    }
+    const parts: string[] = [];
+    let current: HTMLElement | null = element;
+    while (current && current !== this.#root) {
+      const parent: HTMLElement | null = current.parentElement;
+      if (!parent) break;
+      const tag = current.tagName.toLowerCase();
+      const siblings = [...parent.children].filter((sibling) => sibling.tagName === current!.tagName);
+      parts.unshift(`${tag}:nth-of-type(${siblings.indexOf(current) + 1})`);
+      current = parent;
+    }
+    return parts.join(" > ");
   }
 
   #renderRoute(): string {
@@ -403,14 +451,19 @@ export class DemoDayApp {
         <code>${escapeHtml(shorten(candidate.realNpub, 12, 8))}</code>
       </button>`;
     }).join("");
+    const profileSearchAnnouncement = this.#profileSearchStatus === "idle"
+      ? ""
+      : `${this.#profileSearchStatus}:${this.#profileSearchQuery}`;
+    const announceProfileSearch = Boolean(profileSearchAnnouncement) && profileSearchAnnouncement !== this.#announcedProfileSearch;
+    this.#announcedProfileSearch = profileSearchAnnouncement;
     const searchPanel = this.#profileSearchStatus === "loading"
-      ? `<div class="profile-search-message" role="status"><span class="spinner"></span> Searching profiles…</div>`
+      ? `<div class="profile-search-message" ${announceProfileSearch ? 'role="status"' : ""}><span class="spinner"></span> Searching profiles…</div>`
       : this.#profileSearchStatus === "error"
-        ? `<div class="profile-search-message" role="status">Username search unavailable. You can still paste an npub.</div>`
+        ? `<div class="profile-search-message" ${announceProfileSearch ? 'role="status"' : ""}>Username search unavailable. You can still paste an npub.</div>`
         : this.#profileSearchStatus === "ready" && searchResults
           ? `<div class="profile-search-results" role="listbox" aria-label="Matching Nostr profiles">${searchResults}</div>`
           : this.#profileSearchStatus === "ready" && this.#profileSearchQuery
-            ? `<div class="profile-search-message" role="status">No matching profiles found. Try another name or paste an npub.</div>`
+            ? `<div class="profile-search-message" ${announceProfileSearch ? 'role="status"' : ""}>No matching profiles found. Try another name or paste an npub.</div>`
             : "";
 
     return `<div class="panel form-stack">
@@ -535,7 +588,7 @@ export class DemoDayApp {
     return `<section class="current-demo ${ready ? "ready" : "live"}">
       <div class="current-demo-top"><span class="live-pill">${ready ? "READY" : "LIVE"}</span><span>Presented by ${escapeHtml(profile.name)}</span></div>
       <h2>${escapeHtml(current.content.demo.name)}</h2>
-      ${ready ? `<p>${escapeHtml(current.content.demo.description)}</p>` : this.#renderTimer(session.state.timer_started_at_ms, false)}
+      ${ready ? `<p class="project-description">${escapeHtml(current.content.demo.description)}</p>` : this.#renderTimer(session.state.timer_started_at_ms, false)}
       <div class="current-actions">
         ${current.content.demo.link ? `<a class="button button-secondary" href="${escapeAttr(current.content.demo.link)}" target="_blank" rel="noreferrer">Open project</a>` : ""}
         ${hasZap ? button(`⚡ Zap ${escapeHtml(profile.name)}`, "open-zap", { className: "button button-zap", attrs: `data-entry-author="${escapeAttr(current.author)}"` }) : `<span class="zap-unavailable">Zap unavailable · no Lightning address</span>`}
@@ -645,7 +698,8 @@ export class DemoDayApp {
     const item = (pubkey: string, index: number): string => {
       const entry = entryMap.get(pubkey);
       const profile = this.#profile(pubkey);
-      return `<li draggable="true" data-drag-demo="${escapeAttr(pubkey)}" data-drop-index="${index}"><span class="drag-handle" title="Drag to reorder">⋮⋮</span><span class="ranking-number">${index + 1}</span><div class="ranking-card-content"><strong>${escapeHtml(entry?.content.demo.name ?? shorten(pubkey))}</strong>${profileComponent({ picture: profile.picture, pubkey, name: profile.name, size: "sm" })}</div><div class="ranking-actions">${button("↑", "rank-up", { className: "icon-button", disabled: index === 0, attrs: `data-demo="${escapeAttr(pubkey)}"` })}${button("↓", "rank-down", { className: "icon-button", disabled: index === ranking.length - 1, attrs: `data-demo="${escapeAttr(pubkey)}"` })}</div></li>`;
+      const demoName = entry?.content.demo.name ?? shorten(pubkey);
+      return `<li draggable="true" data-drag-demo="${escapeAttr(pubkey)}" data-drop-index="${index}"><span class="drag-handle" title="Drag to reorder" aria-hidden="true">⋮⋮</span><span class="ranking-number">${index + 1}</span><div class="ranking-card-content"><strong>${escapeHtml(demoName)}</strong>${profileComponent({ picture: profile.picture, pubkey, name: profile.name, size: "sm" })}</div><div class="ranking-actions">${button("↑", "rank-up", { className: "icon-button", disabled: index === 0, attrs: `data-demo="${escapeAttr(pubkey)}" aria-label="Move ${escapeAttr(demoName)} up" title="Move up"` })}${button("↓", "rank-down", { className: "icon-button", disabled: index === ranking.length - 1, attrs: `data-demo="${escapeAttr(pubkey)}" aria-label="Move ${escapeAttr(demoName)} down" title="Move down"` })}</div></li>`;
     };
     return `<section class="panel ranking-editor">
       <div class="panel-heading"><h2>Rank the demos</h2><span>Drag and drop</span></div>

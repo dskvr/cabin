@@ -20,4 +20,6 @@ await cp(
   path.join(root, "node_modules", "qrcode-generator", "qrcode.js"),
   path.join(dist, "assets", "qrcode.js"),
 );
+await cp(path.join(root, "node_modules", "gsap", "dist", "gsap.min.js"), path.join(dist, "assets", "gsap.min.js"));
+await cp(path.join(root, "node_modules", "gsap", "dist", "ScrollTrigger.min.js"), path.join(dist, "assets", "ScrollTrigger.min.js"));
 console.log(`Built ${dist}`);
