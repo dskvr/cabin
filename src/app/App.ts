@@ -508,7 +508,10 @@ export class DemoDayApp {
 
   #renderProjectDirectory(session: ParsedSession, entries: ParsedEntry[], ownEntry: ParsedEntry): string {
     const position = new Map(session.state.presented.map((run, index) => [run.pubkey, index]));
-    const sorted = [...entries].sort((a, b) => {
+    const waiting = entries.filter((entry) => (
+      entry.author !== session.state.current_demo_pubkey && !position.has(entry.author)
+    ));
+    const sorted = waiting.sort((a, b) => {
       const aPosition = position.get(a.author);
       const bPosition = position.get(b.author);
       if (aPosition != null && bPosition != null) return aPosition - bPosition;
@@ -518,7 +521,7 @@ export class DemoDayApp {
     });
     const receipts = this.#receiptsForSession(session.address, entries);
     return `<section class="project-section">
-      <div class="section-heading"><h2>Waiting to present</h2><span>${entries.length} projects</span></div>
+      <div class="section-heading"><h2>Waiting to present</h2><span>${waiting.length} projects</span></div>
       <div class="project-grid">${sorted.map((entry) => {
         const profile = this.#profile(entry.author);
         const run = session.state.presented.find((item) => item.pubkey === entry.author) ?? null;
@@ -533,7 +536,7 @@ export class DemoDayApp {
         const projectReceipts = receipts.filter((receipt) => receipt.targetEntryAddress === entry.address);
         const sats = projectReceipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
         return `<article class="project-card ${run ? "completed" : "pending"}">
-          <div class="project-card-head"><div><span class="eyebrow">${run ? `Presented #${(position.get(entry.author) ?? 0) + 1}` : "Not presented"}</span><h3>${escapeHtml(entry.content.demo.name)}</h3>${profileComponent({ picture: profile.picture, pubkey: entry.author, name: profile.name })}</div></div>
+          <div class="project-card-head"><div>${run ? `<span class="eyebrow">Presented #${(position.get(entry.author) ?? 0) + 1}</span>` : ""}<h3>${escapeHtml(entry.content.demo.name)}</h3>${profileComponent({ picture: profile.picture, pubkey: entry.author, name: profile.name })}</div></div>
           <p class="project-description">${escapeHtml(entry.content.demo.description)}</p>
           ${isLive ? `<div class="project-stats"><span>⚡ ${projectReceipts.length} zaps</span><span>${sats.toLocaleString()} sats</span></div>` : ""}
           <div class="project-links">${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}${isLive && canZap && entry.author !== ownEntry.author ? button("⚡ Zap", "open-zap", { className: "button button-zap button-small", attrs: `data-entry-author="${escapeAttr(entry.author)}"` }) : ""}</div>
