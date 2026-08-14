@@ -1,0 +1,1 @@
+{"content":"NIP-59 makes a signed but encrypted seal from an unsigned rumor and hides the authored event inside a recipient p-tagged kind 1059 gift wrap. The official Nostr tools implementation exposes wrap and unwrap helpers.","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-08-14T10:09:16.244Z","ttl":86400000,"kind":"docs"}

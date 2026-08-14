@@ -1,0 +1,1 @@
+{"content":"NIP-44 version 2 is the currently defined scheme; it uses secp256k1 ECDH, HKDF, padding, ChaCha20, HMAC-SHA256 and base64. It must be used via vetted NIP-17 or NIP-59 helpers, not reimplemented.","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-08-14T10:09:16.397Z","ttl":86400000,"kind":"docs"}

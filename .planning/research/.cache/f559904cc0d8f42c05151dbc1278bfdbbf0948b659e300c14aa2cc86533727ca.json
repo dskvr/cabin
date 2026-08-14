@@ -1,0 +1,1 @@
+{"content":"NIP-46 is remote signing, not a captain authorization model. Event signatures identify authors, while product rules such as captain/whitelist permissions must be validated from trusted signed state for each application event.","source":"web","provider":"websearch","confidence":"MEDIUM","fetched_at":"2026-08-14T10:11:27.062Z","ttl":86400000,"kind":"web"}
