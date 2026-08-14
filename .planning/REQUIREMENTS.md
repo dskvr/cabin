@@ -8,20 +8,20 @@
 ### Week Configuration
 
 - [x] **WEEK-01**: Captain can create a week from editable Tuesday-talk and Wednesday-workshop templates
-- [ ] **WEEK-02**: Captain can add, remove, rename, and reorder activities within a week
-- [ ] **WEEK-03**: Captain can set each activity's date, time, location, and link, with all v1 scheduling interpreted in `Atlantic/Madeira`
+- [x] **WEEK-02**: Captain can add, remove, rename, and reorder activities within a week
+- [x] **WEEK-03**: Captain can set each activity's date, time, location, and link, with all v1 scheduling interpreted in `Atlantic/Madeira`
 - [x] **WEEK-04**: Captain can set the week's theme and public descriptive information
 
 ### Demo Day Timing
 
-- [ ] **TIME-01**: A newly created Demo Day defaults to 6 minutes of presentation time and 2 minutes of question time
-- [ ] **TIME-02**: Captain can override presentation and question durations for a week, including a 60-second presentation with 2 minutes of questions
+- [x] **TIME-01**: A newly created Demo Day defaults to 6 minutes of presentation time and 2 minutes of question time
+- [x] **TIME-02**: Captain can override presentation and question durations for a week, including a 60-second presentation with 2 minutes of questions
 
 ### Intake Configuration
 
-- [ ] **FORM-01**: Captain can add, remove, and rename fields in the standard proposal form
-- [ ] **FORM-02**: Captain can mark proposal fields required or optional, and required fields are validated before submission
-- [ ] **FORM-03**: Existing proposal answers remain associated with the correct field when a captain renames or reorders the form
+- [x] **FORM-01**: Captain can add, remove, and rename fields in the standard proposal form
+- [x] **FORM-02**: Captain can mark proposal fields required or optional, and required fields are validated before submission
+- [x] **FORM-03**: Existing proposal answers remain associated with the correct field when a captain renames or reorders the form
 
 ### Participant Proposals
 
@@ -97,14 +97,14 @@ Roadmap phases are assigned during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | WEEK-01 | Phase 1 | Complete |
-| WEEK-02 | Phase 1 | Pending |
-| WEEK-03 | Phase 1 | Pending |
+| WEEK-02 | Phase 1 | Complete |
+| WEEK-03 | Phase 1 | Complete |
 | WEEK-04 | Phase 1 | Complete |
-| TIME-01 | Phase 1 | Pending |
-| TIME-02 | Phase 1 | Pending |
-| FORM-01 | Phase 1 | Pending |
-| FORM-02 | Phase 1 | Pending |
-| FORM-03 | Phase 1 | Pending |
+| TIME-01 | Phase 1 | Complete |
+| TIME-02 | Phase 1 | Complete |
+| FORM-01 | Phase 1 | Complete |
+| FORM-02 | Phase 1 | Complete |
+| FORM-03 | Phase 1 | Complete |
 | PROP-01 | Phase 2 | Pending |
 | PROP-02 | Phase 2 | Pending |
 | ACES-01 | Phase 2 | Pending |
