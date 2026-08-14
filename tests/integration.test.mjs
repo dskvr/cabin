@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { APP_KIND } from "../dist/assets/config/relays.js";
-import { parseCohortManifest, deriveProvisionedWeeks } from "../dist/assets/domain/cohort.js";
-import { seedWeekConfiguration } from "../dist/assets/domain/week.js";
+import { parseCohortManifest, deriveProvisionedWeeks, weekD } from "../dist/assets/domain/cohort.js";
+import { parseWeekConfiguration, seedWeekConfiguration } from "../dist/assets/domain/week.js";
 import { npubEncode } from "../dist/assets/nostr/bech32.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
 import { buildExport } from "../dist/assets/domain/export.js";
@@ -12,6 +12,7 @@ import { parseParticipantEntryEvent } from "../dist/assets/nostr/event-parsers.j
 import { finalizeEvent, getPublicKey } from "../dist/assets/nostr/crypto.js";
 import { NostrRepository } from "../dist/assets/nostr/repository.js";
 import { InMemoryTestTransport } from "../dist/assets/nostr/transport.js";
+import { nextCreatedAt } from "../dist/assets/domain/utils.js";
 
 const key = (number) => number.toString(16).padStart(64, "0");
 const sessionD = "sedd-session:fedcba9876543210fedcba9876543210";
@@ -89,6 +90,53 @@ test("manifest-assigned captain publishes and reads a complete week configuratio
   assert.equal(loaded.configuration.public_description, "A signed, intake-closed week.");
   assert.equal(loaded.configuration.intake_open, false);
   assert.equal(repository.getWeek({ ...slot, captain_pubkey: getPublicKey(key(73)) }), null, "wrong-author coordinates cannot read the state");
+});
+
+test("week configuration rejects invalid boundaries and detects a stale revision base", async () => {
+  const captainSecret = key(74);
+  const captainPubkey = getPublicKey(captainSecret);
+  const participantPubkey = getPublicKey(key(75));
+  const manifestValue = {
+    v: 1,
+    cohort_id: "madeira-2026",
+    start_date: "2026-01-07",
+    end_date: "2026-02-03",
+    starting_week: 3,
+    captains: [{ week_number: 3, npub: npubEncode(captainPubkey) }],
+    participant_allowlist: [npubEncode(participantPubkey)],
+  };
+  const manifest = parseCohortManifest(manifestValue);
+  assert.ok(manifest);
+  assert.equal(parseCohortManifest({ ...manifestValue, end_date: "2026-02-30" }), null, "invalid calendar dates fail closed");
+  assert.equal(parseCohortManifest({ ...manifestValue, participant_allowlist: [npubEncode(participantPubkey), npubEncode(participantPubkey)] }), null, "duplicate allowlist entries fail closed");
+
+  const [slot] = deriveProvisionedWeeks(manifest);
+  assert.ok(slot);
+  const initial = seedWeekConfiguration(slot, { theme: "Nostr in Madeira", public_description: "A signed, intake-closed week." });
+  assert.equal(weekD(slot), weekD(deriveProvisionedWeeks(manifest)[0]), "derivation has a stable coordinate");
+  assert.deepEqual(seedWeekConfiguration(slot, initial), seedWeekConfiguration(slot, initial), "seeding has stable IDs");
+  assert.equal(parseWeekConfiguration({ ...initial, theme: "x".repeat(121) }), null, "overlong themes fail closed");
+  assert.equal(parseWeekConfiguration({ ...initial, activities: [...initial.activities, initial.activities[0]] }), null, "duplicate activity IDs fail closed");
+  assert.equal(parseWeekConfiguration({ ...initial, extra: "x".repeat(40_000) }), null, "oversized unknown payload fields fail closed");
+
+  const transport = new InMemoryTestTransport();
+  const repository = new NostrRepository(transport);
+  const first = await buildWeekConfigurationEvent({ slot, configuration: initial, secretKeyHex: captainSecret, createdAt: 100 });
+  await repository.publish(first);
+  const loaded = await repository.refreshWeek(slot);
+  assert.equal(loaded?.event.id, first.id);
+
+  const replacement = await buildWeekConfigurationEvent({
+    slot,
+    configuration: { ...initial, theme: "Changed elsewhere", base_event_id: first.id },
+    secretKeyHex: captainSecret,
+    createdAt: nextCreatedAt(first.created_at),
+  });
+  assert.ok(replacement.created_at > first.created_at, "revisions use a monotonic timestamp");
+  await repository.publish(replacement);
+  const latest = await repository.refreshWeek(slot);
+  assert.notEqual(latest?.event.id, loaded?.event.id, "a changed relay base is visible before a revision signs");
+  assert.equal(initial.base_event_id, null, "a stale local draft retains its original base rather than adopting the remote revision");
 });
 
 test("multi-client captain, participant, display-state, ranking, closure, and export flow", async () => {
