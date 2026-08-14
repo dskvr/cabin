@@ -96,37 +96,37 @@ Roadmap phases are assigned during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| WEEK-01 | — | Pending |
-| WEEK-02 | — | Pending |
-| WEEK-03 | — | Pending |
-| WEEK-04 | — | Pending |
-| TIME-01 | — | Pending |
-| TIME-02 | — | Pending |
-| FORM-01 | — | Pending |
-| FORM-02 | — | Pending |
-| FORM-03 | — | Pending |
-| PROP-01 | — | Pending |
-| PROP-02 | — | Pending |
-| ACES-01 | — | Pending |
-| ACES-02 | — | Pending |
-| ACES-03 | — | Pending |
-| PRIV-01 | — | Pending |
-| PRIV-02 | — | Pending |
-| SCHD-01 | — | Pending |
-| SCHD-02 | — | Pending |
-| SCHD-03 | — | Pending |
-| SCHD-04 | — | Pending |
-| PUBL-01 | — | Pending |
-| PUBL-02 | — | Pending |
-| LIFE-01 | — | Pending |
-| LIFE-02 | — | Pending |
-| LIFE-03 | — | Pending |
+| WEEK-01 | Phase 1 | Pending |
+| WEEK-02 | Phase 1 | Pending |
+| WEEK-03 | Phase 1 | Pending |
+| WEEK-04 | Phase 1 | Pending |
+| TIME-01 | Phase 1 | Pending |
+| TIME-02 | Phase 1 | Pending |
+| FORM-01 | Phase 1 | Pending |
+| FORM-02 | Phase 1 | Pending |
+| FORM-03 | Phase 1 | Pending |
+| PROP-01 | Phase 2 | Pending |
+| PROP-02 | Phase 2 | Pending |
+| ACES-01 | Phase 2 | Pending |
+| ACES-02 | Phase 1 | Pending |
+| ACES-03 | Phase 1 | Pending |
+| PRIV-01 | Phase 2 | Pending |
+| PRIV-02 | Phase 2 | Pending |
+| SCHD-01 | Phase 3 | Pending |
+| SCHD-02 | Phase 3 | Pending |
+| SCHD-03 | Phase 3 | Pending |
+| SCHD-04 | Phase 3 | Pending |
+| PUBL-01 | Phase 3 | Pending |
+| PUBL-02 | Phase 3 | Pending |
+| LIFE-01 | Phase 4 | Pending |
+| LIFE-02 | Phase 4 | Pending |
+| LIFE-03 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 25 total
-- Mapped to phases: 0
-- Unmapped: 25
+- Mapped to phases: 25
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-08-14*
-*Last updated: 2026-08-14 after initial definition*
+*Last updated: 2026-08-14 after initial roadmap traceability*
