@@ -46,6 +46,12 @@ class CountingTransport extends InMemoryTestTransport {
   }
 }
 
+class AcknowledgingWithoutStorageTransport extends InMemoryTestTransport {
+  async publish(_relays, _event, _options) {
+    return { acceptedBy: ["wss://memory.test"], rejectedBy: [] };
+  }
+}
+
 function makeState(overrides = {}) {
   return {
     v: 1,
@@ -518,6 +524,31 @@ test("deliberate week publications are singular, monotonic, exact round trips, a
   assert.equal(repository.getWeek(slot)?.event.id, queued.id, "retry preserves the exact coordinate and signed event identity");
 });
 
+test("an acknowledgement without relay read-back never clears a critical publication", async () => {
+  const captainSecret = key(101);
+  const captainPubkey = getPublicKey(captainSecret);
+  const manifest = parseCohortManifest({
+    v: 1,
+    cohort_id: "madeira-2026",
+    start_date: "2026-01-07",
+    end_date: "2026-02-03",
+    starting_week: 3,
+    captains: [{ week_number: 3, npub: npubEncode(captainPubkey) }],
+    participant_allowlist: [],
+  });
+  assert.ok(manifest);
+  const [slot] = deriveProvisionedWeeks(manifest);
+  assert.ok(slot);
+  const configuration = seedWeekConfiguration(slot, { theme: "Must survive", public_description: "Never discard this draft on an ACK alone." });
+  const event = await buildWeekConfigurationEvent({ slot, configuration, secretKeyHex: captainSecret, createdAt: 100 });
+  const repository = new NostrRepository(new AcknowledgingWithoutStorageTransport());
+
+  await assert.rejects(repository.publishConfirmed(event), /could not be read back/);
+  assert.equal(repository.pendingWeek(slot)?.id, event.id, "the exact signed revision remains queued for retry");
+  assert.equal(repository.pendingCount(), 1);
+  assert.deepEqual(await repository.refreshWeek(slot), repository.getWeek(slot), "local state remains available without pretending relay durability");
+});
+
 test("activity and field removal remain local until an explicit signed publication", () => {
   const slot = { cohort_id: "madeira-2026", week_number: 3, start_date: "2026-01-13", end_date: "2026-01-19", captain_pubkey: key(80) };
   const draft = seedWeekConfiguration(slot, { theme: "Nostr in Madeira", public_description: "A local unpublished draft." });
@@ -593,7 +624,7 @@ test("week editor actions stay local and publication remains a deliberate guarde
 
   assert.doesNotMatch(inputHandler, /#repository\.publish\(/, "typing and blur do not publish");
   assert.doesNotMatch(editorActions, /#repository\.publish\(/, "add, move, confirmation, cancellation, preview, and readiness actions stay local");
-  assert.equal((publication.match(/#repository\.publish\(/g) ?? []).length, 1, "week publication has one explicit relay-write callsite");
+  assert.equal((publication.match(/#repository\.publishConfirmed\(/g) ?? []).length, 1, "week publication has one explicit relay-write-and-read-back callsite");
   assert.match(publication, /pendingWeek\(slot\)/, "retry reuses an already signed queued event");
   assert.match(publication, /refreshWeek\(slot\)/, "revision checks the exact manifest-derived coordinate immediately before signing");
   assert.match(publication, /baseEventId !== \(latest\?\.event\.id \?\? null\)/, "stale bases block signing");

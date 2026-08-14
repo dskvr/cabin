@@ -2371,9 +2371,11 @@ export class DemoDayApp {
         await this.#publishWeek();
         this.#weekPublicationError = null;
       } catch (error) {
-        this.#weekPublicationError = error instanceof Error && error.message
+        const message = error instanceof Error && error.message
           ? error.message
           : "We couldn't publish this week. Check your Nostr connection and signing identity, then try again.";
+        this.#weekPublicationError = message;
+        this.#notice = { kind: "error", text: message };
       }
     });
   }
@@ -2558,7 +2560,7 @@ export class DemoDayApp {
     const event = await buildWeekConfigurationEventWithSigner({
       slot, configuration: valid, signer, createdAt: nextCreatedAt(latest?.event.created_at),
     });
-    await this.#repository.publish(event);
+    await this.#repository.publishConfirmed(event);
     const accepted = await this.#repository.refreshWeek(slot);
     if (accepted?.event.id !== event.id) throw new Error("The signed week configuration was not read back from the repository.");
     this.#weekDrafts.set(scope, structuredClone(accepted.configuration));

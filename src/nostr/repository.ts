@@ -183,13 +183,24 @@ export class NostrRepository {
   }
 
   async publish(event: NostrEvent): Promise<void> {
+    await this.#publish(event, false);
+  }
+
+  async publishConfirmed(event: NostrEvent): Promise<void> {
+    await this.#publish(event, true);
+  }
+
+  async #publish(event: NostrEvent, requireReadBack: boolean): Promise<void> {
     await this.ingest({ event, relay: "local" });
     if (!this.#pending.some((item) => item.event.id === event.id)) {
       this.#pending.push({ event, addedAtMs: Date.now() });
       savePending(this.#pending);
     }
     try {
-      await this.#transport.publish(DEFAULT_RELAYS, event, { maxWait: 4_000 });
+      const result = await this.#transport.publish(DEFAULT_RELAYS, event, { maxWait: 4_000 });
+      if (requireReadBack && !(await this.#confirmPublished(event, result.acceptedBy))) {
+        throw new Error("A relay acknowledged the event, but it could not be read back. Your changes remain saved locally and queued for retry.");
+      }
       this.#pending = this.#pending.filter((item) => item.event.id !== event.id);
       savePending(this.#pending);
     } catch (error) {
@@ -205,7 +216,14 @@ export class NostrRepository {
   async retryPending(): Promise<void> {
     for (const pending of [...this.#pending]) {
       try {
-        await this.#transport.publish(DEFAULT_RELAYS, pending.event, { maxWait: 4_000 });
+        let relays: readonly string[] = DEFAULT_RELAYS;
+        try {
+          const result = await this.#transport.publish(DEFAULT_RELAYS, pending.event, { maxWait: 4_000 });
+          if (result.acceptedBy.length > 0) relays = result.acceptedBy;
+        } catch {
+          // A previous attempt may already have reached a relay despite a lost ACK.
+        }
+        if (!(await this.#confirmPublished(pending.event, relays))) continue;
         this.#pending = this.#pending.filter((item) => item.event.id !== pending.event.id);
         savePending(this.#pending);
       } catch {
@@ -213,6 +231,16 @@ export class NostrRepository {
       }
     }
     this.#notify();
+  }
+
+  async #confirmPublished(event: NostrEvent, relays: readonly string[]): Promise<boolean> {
+    const targets = relays.length > 0 ? relays : DEFAULT_RELAYS;
+    for (const delay of [0, 250, 750]) {
+      if (delay > 0) await new Promise<void>((resolve) => globalThis.setTimeout(resolve, delay));
+      const observed = await this.queryRaw(targets, { ids: [event.id], limit: 1 }, { maxWait: 2_000 });
+      if (observed.some((item) => item.event.id === event.id)) return true;
+    }
+    return false;
   }
 
   pendingCount(): number {
