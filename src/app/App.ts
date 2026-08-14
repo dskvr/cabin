@@ -17,6 +17,7 @@ import {
   removeActivity,
   removeProposalField,
   seedWeekConfiguration,
+  publicWeekProjection,
   updateActivity,
   updateProposalField,
   validateWeekConfiguration,
@@ -80,7 +81,7 @@ import {
   requestZapInvoice,
   type LnurlPayMetadata,
 } from "../nostr/zaps.js";
-import { button, captainCard, escapeAttr, escapeHtml, field, identiconDataUri, profileComponent, textarea } from "../ui/html.js";
+import { button, captainCard, escapeAttr, escapeHtml, field, identiconDataUri, profileComponent, publicWeekPreview, textarea } from "../ui/html.js";
 import { activateMotion } from "../ui/motion.js";
 import { navigate, parseRoute, sessionNaddr, type AppRoute } from "./router.js";
 
@@ -239,6 +240,7 @@ export class DemoDayApp {
   #weekExpanded = new Set<string>();
   #weekRemoval: { scope: string; kind: "activity" | "field"; id: string } | null = null;
   #weekDraftBaseEvents = new Map<string, string | null>();
+  #weekPreview: { scope: string; status: "loading" | "ready"; returnFocus: string } | null = null;
   #requestedProfiles = new Set<string>();
   #sessionUnsubscribe: (() => void) | null = null;
   #zapUnsubscribe: (() => void) | null = null;
@@ -424,6 +426,7 @@ export class DemoDayApp {
       case "home": return this.#renderHome();
       case "create": return this.#renderCreate();
       case "advanced": return this.#renderAdvanced();
+      case "week-setup": return this.#renderWeekConfiguration();
       case "session": return this.#renderSession(this.#route.selected, false);
       case "display": return this.#renderSession(this.#route.selected, true);
       case "invalid": return `<section class="empty-state"><span class="eyebrow">Invalid route</span><h1>That session address could not be opened.</h1><p>${escapeHtml(this.#route.message)}</p><a class="button button-primary" href="#/">Return home</a></section>`;
@@ -475,6 +478,12 @@ export class DemoDayApp {
     if (!this.#weekDraftBaseEvents.has(scope)) this.#weekDraftBaseEvents.set(scope, persisted?.event.id ?? null);
     const draft = this.#weekDraft(scope, seed);
     const readiness = validateWeekConfiguration(draft);
+    if (this.#weekPreview?.scope === scope) {
+      if (this.#weekPreview.status === "loading") {
+        return `<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading preview…</section>`;
+      }
+      return `<section class="narrow-page week-workspace">${publicWeekPreview(publicWeekProjection(draft))}<div class="form-actions"><button class="button button-secondary" data-action="return-to-week-editing" data-week-scope="${escapeAttr(scope)}">Return to editing</button></div></section>`;
+    }
     const group = (day: "tuesday" | "wednesday", heading: string) => {
       const activities = draft.activities.filter((item) => item.day === day);
       const errors = readiness.sections[`${day}_activities`];
@@ -510,7 +519,7 @@ export class DemoDayApp {
       <section class="week-subsection"><h2>Activities</h2>${group("tuesday", "Tuesday talks")}${group("wednesday", "Wednesday workshops")}</section>
       <section class="week-subsection"><h2>Proposal form</h2>${fields || `<div class="empty-state compact"><h3>No proposal fields yet</h3><p>Add a field before publishing this week.</p></div>`}<button class="button button-secondary" data-action="add-week-field" data-week-scope="${escapeAttr(scope)}">Add field</button></section>
       <section class="week-subsection"><h2>Demo Day timing</h2><label class="field"><span>Presentation duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:presentation_minutes" value="${draft.presentation_minutes}" /></label><label class="field"><span>Question duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:question_minutes" value="${draft.question_minutes}" /></label><p>Demo Day timing: ${draft.presentation_minutes}:00 presentation + ${draft.question_minutes}:00 questions.</p></section>
-      <section class="panel readiness-panel"><h2>Readiness</h2>${readinessItems.map(([label, key]) => `<p class="${readiness.sections[key].length ? "needs-attention" : "ready"}"><strong>${escapeHtml(label)}:</strong> ${readiness.sections[key].length ? "Needs attention" : "Ready"}</p>`).join("")} ${readiness.valid ? "" : "<p>This section needs attention. Complete the highlighted fields to publish this week.</p>"}<div class="form-actions"><button class="button button-primary" type="submit" ${readiness.valid ? "" : "disabled"}>${persisted ? "Publish changes" : "Create week"}</button></div></section></form>
+      <section class="panel readiness-panel"><h2>Readiness</h2>${readinessItems.map(([label, key]) => `<p class="${readiness.sections[key].length ? "needs-attention" : "ready"}"><strong>${escapeHtml(label)}:</strong> ${readiness.sections[key].length ? "Needs attention" : "Ready"}</p>`).join("")} ${readiness.valid ? "" : "<p>This section needs attention. Complete the highlighted fields to publish this week.</p>"}<div class="form-actions"><button class="button button-secondary" data-action="preview-week" data-week-scope="${escapeAttr(scope)}">Preview week</button><button class="button button-primary" type="submit" ${readiness.valid ? "" : "disabled"}>${persisted ? "Publish changes" : "Create week"}</button></div></section></form>
     </section>`;
   }
 
@@ -2156,6 +2165,24 @@ export class DemoDayApp {
   #handleWeekAction(action: string, element: HTMLElement): boolean {
     const scope = element.dataset.weekScope;
     const draft = scope ? this.#weekDrafts.get(scope) : null;
+    if (action === "preview-week") {
+      if (!scope || !draft) return true;
+      this.#weekPreview = { scope, status: "loading", returnFocus: this.#focusSelector(element) };
+      this.requestRender();
+      queueMicrotask(() => {
+        if (this.#weekPreview?.scope !== scope || this.#weekPreview.status !== "loading") return;
+        this.#weekPreview = { ...this.#weekPreview, status: "ready" };
+        this.requestRender();
+      });
+      return true;
+    }
+    if (action === "return-to-week-editing") {
+      const returnFocus = this.#weekPreview?.returnFocus;
+      this.#weekPreview = null;
+      this.requestRender();
+      if (returnFocus) queueMicrotask(() => this.#root.querySelector<HTMLElement>(returnFocus)?.focus({ preventScroll: true }));
+      return true;
+    }
     if (action === "toggle-week-card") {
       const id = element.dataset.cardId;
       if (!id) return true;

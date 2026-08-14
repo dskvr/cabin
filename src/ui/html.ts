@@ -137,3 +137,10 @@ export function textarea({
 }): string {
   return `<label class="field"><span>${escapeHtml(label)}</span><textarea name="${escapeAttr(name)}" placeholder="${escapeAttr(placeholder)}" ${required ? "required" : ""} ${maxlength ? `maxlength="${maxlength}"` : ""} rows="${rows}">${escapeHtml(value)}</textarea></label>`;
 }
+
+export function publicWeekPreview(projection: PublicWeekProjection): string {
+  const agenda = projection.activities.map((activity) => `<li><strong>${escapeHtml(activity.name)}</strong><span>${escapeHtml(activity.date)} · ${escapeHtml(activity.starts_at)}–${escapeHtml(activity.ends_at)} · ${escapeHtml(activity.location)}</span>${activity.link ? `<a href="${escapeAttr(activity.link)}" target="_blank" rel="noreferrer">Open link</a>` : ""}</li>`).join("");
+  const fields = projection.proposal_fields.map((proposalField) => `<li>${escapeHtml(proposalField.label)}${proposalField.required ? " <strong>Required</strong>" : ""}</li>`).join("");
+  return `<section class="week-preview" aria-labelledby="week-preview-heading"><span class="eyebrow">Public week preview</span><h1 id="week-preview-heading">${escapeHtml(projection.theme)}</h1><p>${escapeHtml(projection.public_description)}</p><section><h2>Agenda</h2><ol class="week-preview-list">${agenda}</ol></section><section><h2>Demo Day timing</h2><p>${projection.presentation_minutes}:00 presentation + ${projection.question_minutes}:00 questions.</p></section><section><h2>Proposal fields</h2><ul class="week-preview-list">${fields}</ul></section></section>`;
+}
+import type { PublicWeekProjection } from "../domain/week.js";

@@ -40,6 +40,16 @@ export interface WeekConfigurationV1 {
   base_event_id: string | null;
 }
 
+export interface PublicWeekProjection {
+  theme: string;
+  public_description: string;
+  timezone: "Atlantic/Madeira";
+  activities: Array<Pick<WeekActivityV1, "day" | "name" | "date" | "starts_at" | "ends_at" | "location" | "link">>;
+  proposal_fields: Array<Pick<ProposalFieldV1, "label" | "required">>;
+  presentation_minutes: number;
+  question_minutes: number;
+}
+
 function text(value: unknown, min: number, max: number): value is string {
   return typeof value === "string" && value.trim().length >= min && value.length <= max;
 }
@@ -90,6 +100,21 @@ export function parseWeekConfiguration(value: unknown): WeekConfigurationV1 | nu
   if (!validDuration(value.presentation_minutes) || !validDuration(value.question_minutes)) return null;
   if (!(value.base_event_id === null || isValidEventId(value.base_event_id))) return null;
   return value as unknown as WeekConfigurationV1;
+}
+
+/** The only configuration data that may be rendered in the Phase 1 public preview. */
+export function publicWeekProjection(configuration: WeekConfigurationV1): PublicWeekProjection {
+  return {
+    theme: configuration.theme,
+    public_description: configuration.public_description,
+    timezone: configuration.timezone,
+    activities: configuration.activities.map(({ day, name, date, starts_at, ends_at, location, link }) => ({
+      day, name, date, starts_at, ends_at, location, link: link ? normalizeOptionalUrl(link) : null,
+    })),
+    proposal_fields: configuration.proposal_fields.map(({ label, required }) => ({ label, required })),
+    presentation_minutes: configuration.presentation_minutes,
+    question_minutes: configuration.question_minutes,
+  };
 }
 
 export type WeekValidation = {

@@ -7,6 +7,7 @@ export type AppRoute =
   | { name: "home" }
   | { name: "create" }
   | { name: "advanced" }
+  | { name: "week-setup" }
   | { name: "session"; naddr: string; selected: SelectedSession }
   | { name: "display"; naddr: string; selected: SelectedSession }
   | { name: "invalid"; message: string };
@@ -17,6 +18,7 @@ export function parseRoute(hash = globalThis.location?.hash ?? "#/" ): AppRoute 
   if (parts.length === 0) return { name: "home" };
   if (parts[0] === "create") return { name: "create" };
   if (parts[0] === "advanced" && parts.length === 1) return { name: "advanced" };
+  if (parts[0] === "week-setup" && parts.length === 1) return { name: "week-setup" };
   if ((parts[0] === "session" || parts[0] === "display") && parts[1]) {
     try {
       const decoded = decodeNaddr(parts[1]);

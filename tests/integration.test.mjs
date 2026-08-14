@@ -13,6 +13,7 @@ import { finalizeEvent, getPublicKey } from "../dist/assets/nostr/crypto.js";
 import { NostrRepository } from "../dist/assets/nostr/repository.js";
 import { InMemoryTestTransport } from "../dist/assets/nostr/transport.js";
 import { nextCreatedAt } from "../dist/assets/domain/utils.js";
+import { publicWeekPreview } from "../dist/assets/ui/html.js";
 
 const key = (number) => number.toString(16).padStart(64, "0");
 const sessionD = "sedd-session:fedcba9876543210fedcba9876543210";
@@ -154,6 +155,23 @@ test("activity and field removal remain local until an explicit signed publicati
   assert.equal(afterField.proposal_fields.some((item) => item.id === field.id), false);
   assert.equal(answers[field.id], "Cabin maps", "unaffected local answer state is not rewritten by removal");
   assert.equal(parseWeekConfiguration(afterField)?.base_event_id, null, "local destructive mutations emit no relay publication");
+});
+
+test("public preview renders only the escaped public configuration projection", () => {
+  const markup = publicWeekPreview({
+    theme: "<img src=x onerror=alert(1)>",
+    public_description: "<script>alert(1)</script>",
+    timezone: "Atlantic/Madeira",
+    activities: [{ day: "tuesday", name: "<b>Talk</b>", date: "2026-01-13", starts_at: "18:00", ends_at: "19:00", location: "<em>Harbour</em>", link: "https://example.com/demo" }],
+    proposal_fields: [{ label: "<svg onload=alert(1)>", required: true }],
+    presentation_minutes: 6,
+    question_minutes: 2,
+  });
+  assert.match(markup, /Public week preview/);
+  assert.match(markup, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(markup, /href="https:\/\/example\.com\/demo"/);
+  assert.doesNotMatch(markup, /participant_allowlist|base_event_id|proposal-submission/i);
+  assert.doesNotMatch(markup, /<script>|<svg onload/);
 });
 
 test("multi-client captain, participant, display-state, ranking, closure, and export flow", async () => {
