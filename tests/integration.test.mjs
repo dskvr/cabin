@@ -730,6 +730,9 @@ test("Captain's Cabin UI keeps private drafting and public publication behind se
   assert.equal((app.match(/data-action="connect-nip07"/g) ?? []).length, 1, "NIP-07 login is exposed once at app level");
   assert.match(app, /data-action="disconnect-nip07">Logout/);
   assert.doesNotMatch(app, /Use your browser extension to sign Captain’s Cabin events/);
+  const repositoryChangeHandlerStart = app.indexOf("#retryFailedProfileLoads() {");
+  const repositoryChangeHandler = app.slice(repositoryChangeHandlerStart, app.indexOf("#reportBackgroundRelayFailure() {", repositoryChangeHandlerStart));
+  assert.match(repositoryChangeHandler, /#cabinLoading\.size > 0/, "relay events do not replace the interactive DOM while the private inbox decrypts");
 });
 
 test("multi-client captain, participant, display-state, ranking, closure, and export flow", async () => {

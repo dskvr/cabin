@@ -1408,6 +1408,11 @@ export class DemoDayApp {
 
   #retryFailedProfileLoads(): void {
     this.#failedProfileLoads.clear();
+    // Relay queries notify for every newly indexed event. Re-rendering while an
+    // encrypted inbox is being assembled replaces every interactive element
+    // on the page between decryptions. The cabin loader performs one complete
+    // render when it settles, so keep the current DOM stable until then.
+    if (this.#cabinLoading.size > 0) return;
     this.#requestBackgroundRender();
   }
 
