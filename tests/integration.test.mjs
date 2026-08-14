@@ -108,13 +108,20 @@ test("public navigation exposes a five-day week board with Friday highlighted", 
 
   assert.match(appSource, /class="brand-logo" src="\.\/sovereign-engineering-logo\.svg"/);
   assert.match(appSource, /class="brand-week">Week \$\{headerWeek\.week_number\}/);
+  assert.match(appSource, /if \(this\.#publicCabinLoading && !configuration\) return `\$\{header\}<section class="panel week-state-panel"/);
   assert.match(styles, /\.brand-week \{[\s\S]*color: var\(--yellow\)/);
   assert.match(logo, /viewBox="0 0 350\.0407 405\.535"/);
   assert.match(appSource, /WEEK_DAYS\.map/);
   assert.match(appSource, /#renderWeekDay\(weekNumber: number, day: WeekDay\)/);
   assert.match(appSource, /week_configuration_event_id: week\.event\.id/);
+  assert.match(appSource, /publication\.source_configuration_event_id === currentConfigurationEventId/, "stale public schedules cannot override the current week configuration");
+  assert.match(appSource, /const activities = configuration\?\.activities\.filter[\s\S]*?\?\? publication\?\.activities\.filter/, "published week activities remain authoritative over schedule metadata");
+  assert.match(appSource, /function activityTimingState[\s\S]*?timeZone: "Atlantic\/Madeira"|function madeiraClock[\s\S]*?timeZone: "Atlantic\/Madeira"/);
+  assert.match(appSource, /class="activity-timing-\$\{timing\}"/);
   assert.match(styles, /\.week-board \{ display: grid; grid-template-columns: repeat\(5,/);
   assert.match(styles, /\.day-card-friday \{/);
+  assert.match(styles, /\.activity-timing-past[\s\S]*text-decoration: line-through/);
+  assert.match(styles, /\.day-detail-panel\.activity-timing-active/);
   assert.match(styles, /@media \(max-width: 660px\)/);
 });
 
@@ -591,14 +598,20 @@ test("week workspace ships every loading, error, retry, accessibility, and respo
     "Loading week configuration…",
     "Loading preview…",
     "This identity is not assigned a week to configure.",
-    "Changes saved locally",
     "We couldn't publish this week. Check your Nostr connection and signing identity, then try again.",
     "Try again",
-    "Week published. Intake remains closed.",
+    "Your exact signed configuration was read back from a relay. Intake remains closed.",
     "Needs attention",
   ]) assert.match(app, new RegExp(copy.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")));
   assert.match(app, /aria-describedby/);
   assert.match(app, /aria-live="polite"/);
+  assert.match(app, /class="modal notice-modal notice-modal-/);
+  assert.match(app, /role="\$\{notice\.kind === "error" \? "alertdialog" : "dialog"\}"/);
+  assert.doesNotMatch(app, /class="notice notice-\$\{escapeAttr\(this\.#notice\.kind\)\}"/, "action results are consolidated into a modal");
+  assert.doesNotMatch(app, /publication-state/, "form status is never buried inline at the bottom of the editor");
+  assert.match(app, /class="modal-backdrop busy-overlay"/);
+  assert.match(app, /class="modal busy-card" role="dialog" aria-modal="true"/);
+  assert.match(app, /Try publishing again/);
   assert.match(app, /focusWeekInvalid/);
   assert.match(css, /@media \(max-width: 660px\)/);
   assert.match(css, /overflow-wrap: anywhere/);
@@ -641,6 +654,7 @@ test("Captain's Cabin UI keeps private drafting and public publication behind se
   const publicProjection = app.slice(app.indexOf("#publishCabinSchedule"), app.indexOf("#archiveCabinWeek"));
   assert.match(publicProjection, /publicScheduleProjection/);
   assert.match(publicProjection, /buildPublicScheduleEvent/);
+  assert.match(publicProjection, /publishConfirmed/, "public schedule publication waits for relay read-back");
   assert.doesNotMatch(publicProjection, /proposal\.answers|proposalInbox/);
   const proposalSubmit = app.slice(app.indexOf("async #submitCabinProposal"), app.indexOf("#saveCabinPlacement", app.indexOf("async #submitCabinProposal")));
   assert.equal((proposalSubmit.match(/#repository\.publish\(/g) ?? []).length, 1, "proposal submission publishes only the captain-addressed envelope");

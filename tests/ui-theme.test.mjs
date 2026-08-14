@@ -35,7 +35,7 @@ test("motion integration keeps background renders and accessibility preferences 
   assert.match(motion, /clearProps: "transform"/);
   assert.match(app, /const animateEntrance = motionRouteKey !== this\.#motionRouteKey/);
   assert.match(app, /const animateModal = Boolean\(motionModalKey\)/);
-  assert.match(app, /announceNotice \? 'role="alert"' : ""/);
+  assert.match(app, /notice\.kind === "error" \? "alertdialog" : "dialog"/);
   assert.match(app, /profileSearchAnnouncement !== this\.#announcedProfileSearch/);
 });
 
@@ -43,7 +43,8 @@ test("actions acknowledge clicks and long operations paint a loading state befor
   assert.match(app, /this\.#acknowledgeInteraction\(actionElement\)/);
   assert.match(app, /event\.submitter instanceof HTMLElement/);
   assert.match(app, /this\.render\(\);\s+await this\.#afterBusyPaint\(\);/);
-  assert.match(app, /class="busy-overlay" role="status" aria-live="polite"/);
+  assert.match(app, /class="modal-backdrop busy-overlay"/);
+  assert.match(app, /class="modal busy-card" role="dialog" aria-modal="true" aria-live="polite"/);
   assert.match(app, /aria-busy="true"/);
   assert.match(css, /\[data-action\]\.is-activating:not\(:disabled\)/);
   assert.match(css, /\.busy-progress i\s*\{[\s\S]*animation: busy-progress/);

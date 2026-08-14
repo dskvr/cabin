@@ -59,6 +59,7 @@ import {
   removeProposalField,
   publicWeekProjection,
   parseWeekConfiguration,
+  recoverWeekConfigurationDraft,
   seedWeekConfiguration,
   updateActivity,
   updateProposalField,
@@ -761,6 +762,25 @@ test("captains can add title-only activities to every weekday", () => {
   const monday = configuration.activities.find((item) => item.name === "monday activity");
   assert.ok(monday);
   assert.equal(validateWeekConfiguration(updateActivity(configuration, monday.id, { name: "" })).valid, false, "title remains the only required activity field");
+});
+
+test("an incomplete stored field cannot erase the rest of a week draft", () => {
+  const slot = { cohort_id: "madeira-2026", week_number: 3, start_date: "2026-01-12", end_date: "2026-01-16", captain_pubkey: key(90), participant_allowlist: [] };
+  const seed = seedWeekConfiguration(slot, { theme: "Original", public_description: "Original description." });
+  const damaged = {
+    ...seed,
+    theme: "Captain's complete theme",
+    public_description: "",
+    activities: seed.activities.map((activity, index) => index === 0 ? { ...activity, name: "My real Tuesday", date: "08/11/2026" } : activity),
+  };
+
+  assert.equal(parseWeekConfiguration(damaged), null, "the incomplete draft is not publishable");
+  const recovered = recoverWeekConfigurationDraft(damaged, seed);
+  assert.ok(recovered);
+  assert.equal(recovered.theme, "Captain's complete theme");
+  assert.equal(recovered.activities[0]?.name, "My real Tuesday");
+  assert.equal(recovered.activities[0]?.date, "", "a malformed redundant date is normalized instead of rejecting the draft");
+  assert.equal(validateWeekConfiguration(recovered).valid, false, "the specific incomplete field remains visible for correction");
 });
 
 test("proposal fields keep answer association through rename, reorder, requiredness, and removal", () => {

@@ -121,6 +121,45 @@ export function parseWeekConfiguration(value: unknown): WeekConfigurationV1 | nu
   return value as unknown as WeekConfigurationV1;
 }
 
+/** Recover an app-authored draft without discarding the whole week when one field is incomplete. */
+export function recoverWeekConfigurationDraft(value: unknown, seed: WeekConfigurationV1): WeekConfigurationV1 | null {
+  if (!isRecord(value) || value.cohort_id !== seed.cohort_id || value.week_number !== seed.week_number) return null;
+  const rawActivities = Array.isArray(value.activities) ? value.activities : null;
+  const rawFields = Array.isArray(value.proposal_fields) ? value.proposal_fields : null;
+  if (!rawActivities || !rawFields) return null;
+  const activities = rawActivities.flatMap((item): WeekActivityV1[] => {
+    if (!isRecord(item) || !identifier(item.id) || !ACTIVITY_DAYS.includes(item.day as ActivityDay)) return [];
+    const rawLink = typeof item.link === "string" ? normalizeOptionalUrl(item.link) : null;
+    return [{
+      id: item.id,
+      day: item.day as ActivityDay,
+      name: typeof item.name === "string" ? item.name : "",
+      description: typeof item.description === "string" ? item.description : "",
+      date: typeof item.date === "string" && (item.date === "" || calendarDate(item.date)) ? item.date : "",
+      starts_at: typeof item.starts_at === "string" ? item.starts_at : "",
+      ends_at: typeof item.ends_at === "string" ? item.ends_at : "",
+      location: typeof item.location === "string" ? item.location : "",
+      link: rawLink,
+    }];
+  });
+  const proposal_fields = rawFields.flatMap((item): ProposalFieldV1[] =>
+    isRecord(item) && identifier(item.id)
+      ? [{ id: item.id, label: typeof item.label === "string" ? item.label : "", required: item.required === true }]
+      : []);
+  return {
+    ...seed,
+    status: value.status === "active" || value.status === "completed" ? value.status : "setup",
+    intake_open: value.intake_open === true,
+    theme: typeof value.theme === "string" ? value.theme : seed.theme,
+    public_description: typeof value.public_description === "string" ? value.public_description : seed.public_description,
+    activities,
+    proposal_fields,
+    presentation_minutes: typeof value.presentation_minutes === "number" ? value.presentation_minutes : seed.presentation_minutes,
+    question_minutes: typeof value.question_minutes === "number" ? value.question_minutes : seed.question_minutes,
+    base_event_id: value.base_event_id === null || isValidEventId(value.base_event_id) ? value.base_event_id : seed.base_event_id,
+  };
+}
+
 /** The only configuration data that may be rendered in the Phase 1 public preview. */
 export function publicWeekProjection(configuration: WeekConfigurationV1): PublicWeekProjection {
   return {

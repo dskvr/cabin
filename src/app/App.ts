@@ -17,6 +17,7 @@ import {
   scheduleWarnings,
   type PrivateProposal,
   type PrivateSchedule,
+  type PublicSchedule,
   type WeekArchive,
 } from "../domain/cabin.js";
 import {
@@ -26,6 +27,7 @@ import {
   moveActivity,
   moveProposalField,
   parseWeekConfiguration,
+  recoverWeekConfigurationDraft,
   removeActivity,
   removeProposalField,
   seedWeekConfiguration,
@@ -126,6 +128,7 @@ function lightningQr(invoice: string): string {
 
 interface Notice {
   kind: "success" | "error" | "info";
+  title?: string;
   text: string;
 }
 
@@ -213,8 +216,34 @@ function activityTime(activity: Pick<WeekActivityV1, "starts_at" | "ends_at">): 
   return "";
 }
 
-function activityDetails(activity: Pick<WeekActivityV1, "date" | "starts_at" | "ends_at" | "location">): string[] {
-  return [activity.date, activityTime(activity), activity.location].filter(Boolean);
+function activityDetails(activity: Pick<WeekActivityV1, "starts_at" | "ends_at" | "location">): string[] {
+  return [activityTime(activity), activity.location].filter(Boolean);
+}
+
+type ActivityTimingState = "upcoming" | "active" | "past";
+
+function madeiraClock(now = new Date()): { date: string; time: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Atlantic/Madeira",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const value = (type: Intl.DateTimeFormatPartTypes): string => parts.find((part) => part.type === type)?.value ?? "";
+  return { date: `${value("year")}-${value("month")}-${value("day")}`, time: `${value("hour")}:${value("minute")}` };
+}
+
+function activityTimingState(slot: ProvisionedWeek, activity: Pick<WeekActivityV1, "day" | "starts_at" | "ends_at">, now = new Date()): ActivityTimingState {
+  const current = madeiraClock(now);
+  const date = weekDayDate(slot, activity.day);
+  if (date < current.date) return "past";
+  if (date > current.date) return "upcoming";
+  if (activity.ends_at && current.time >= activity.ends_at) return "past";
+  if (activity.starts_at && current.time >= activity.starts_at && (!activity.ends_at || current.time < activity.ends_at)) return "active";
+  return "upcoming";
 }
 
 function storedTheme(): ColorTheme {
@@ -467,11 +496,12 @@ export class DemoDayApp {
         : this.#route.name;
     const animateEntrance = motionRouteKey !== this.#motionRouteKey;
     this.#motionRouteKey = motionRouteKey;
-    const motionModalKey = this.#zapModal ? `${this.#zapModal.entryAuthor}:${this.#zapModal.status}` : "";
+    const motionModalKey = this.#zapModal
+      ? `${this.#zapModal.entryAuthor}:${this.#zapModal.status}`
+      : this.#notice ? `notice:${this.#notice.kind}:${this.#notice.title ?? this.#notice.text}` : "";
     const animateModal = Boolean(motionModalKey) && motionModalKey !== this.#motionModalKey;
     this.#motionModalKey = motionModalKey;
     const announceNotice = Boolean(this.#notice) && this.#notice?.text !== this.#announcedNotice;
-    const alertRole = announceNotice ? 'role="alert"' : "";
     this.#announcedNotice = this.#notice?.text ?? "";
     this.#root.innerHTML = `
       <div class="app-shell ${this.#route.name === "display" ? "display-shell" : ""}" ${this.#busy ? 'aria-busy="true"' : ""}>
@@ -490,10 +520,10 @@ export class DemoDayApp {
             </div>
           </header>
         `}
-        ${this.#notice ? `<div class="notice notice-${escapeAttr(this.#notice.kind)}" ${this.#notice.kind === "error" ? alertRole : announceNotice ? 'role="status" aria-live="polite"' : ""}>${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
         <main class="${this.#route.name === "display" ? "display-main" : "page"}">${page}</main>
         ${this.#route.name === "display" ? "" : `<footer><nav>${this.#route.name === "session" ? `<a href="#/display/${escapeAttr(this.#route.naddr)}" data-fullscreen-display>Front of room display</a>` : ""}<a href="#/week-setup">Week setup</a><a href="#/create">I AM THE CAPTAIN NOW</a><a href="#/">Cohort week</a><a href="#/advanced">Advanced</a></nav></footer>`}
-        ${this.#busy ? `<div class="busy-overlay" role="status" aria-live="polite" aria-label="${escapeAttr(this.#busy)}"><div class="busy-card"><span class="spinner large" aria-hidden="true"></span><strong>${escapeHtml(this.#busy)}…</strong><span class="busy-progress" aria-hidden="true"><i></i></span></div></div>` : ""}
+        ${this.#busy ? `<div class="modal-backdrop busy-overlay"><section class="modal busy-card" role="dialog" aria-modal="true" aria-live="polite" aria-label="${escapeAttr(this.#busy)}"><span class="spinner large" aria-hidden="true"></span><strong>${escapeHtml(this.#busy)}…</strong><span class="busy-progress" aria-hidden="true"><i></i></span></section></div>` : ""}
+        ${this.#renderNoticeModal(announceNotice)}
         ${this.#renderZapModal()}
       </div>
     `;
@@ -513,6 +543,16 @@ export class DemoDayApp {
     }
     this.#updateTimers();
     this.#ensureRouteData();
+  }
+
+  #renderNoticeModal(announce: boolean): string {
+    const notice = this.#notice;
+    if (!notice) return "";
+    const isWeekPublicationError = notice.kind === "error" && notice.text === this.#weekPublicationError;
+    const title = notice.title ?? (notice.kind === "error" ? "Action failed" : notice.kind === "success" ? "Done" : "Update");
+    const symbol = notice.kind === "error" ? "!" : notice.kind === "success" ? "✓" : "i";
+    const accessibility = `role="${notice.kind === "error" ? "alertdialog" : "dialog"}"${announce ? ` aria-live="${notice.kind === "error" ? "assertive" : "polite"}"` : ""}`;
+    return `<div class="modal-backdrop notice-modal-backdrop"><section class="modal notice-modal notice-modal-${escapeAttr(notice.kind)}" ${accessibility} aria-modal="true" aria-labelledby="notice-modal-title"><button class="modal-close" data-action="dismiss-notice" aria-label="Close message">×</button><span class="notice-modal-symbol" aria-hidden="true">${symbol}</span><span class="eyebrow">${notice.kind === "error" ? "Could not complete action" : notice.kind === "success" ? "Action complete" : "Status update"}</span><h2 id="notice-modal-title">${escapeHtml(title)}</h2><p>${escapeHtml(notice.text)}</p><div class="form-actions">${isWeekPublicationError ? `<button class="button button-primary" data-action="retry-week-publication">Try publishing again</button>` : ""}<button class="button button-secondary" data-action="dismiss-notice">${notice.kind === "error" ? "Keep editing" : "Continue"}</button></div></section></div>`;
   }
 
   #focusSelector(element: HTMLElement): string {
@@ -554,18 +594,24 @@ export class DemoDayApp {
     if (!slot) return `<section class="empty-state"><h1>Cohort week unavailable</h1><p>Check the compiled cohort manifest.</p></section>`;
     const configuration = this.#publicConfiguration(slot);
     const defaultActivities = configuration ? [] : seedWeekConfiguration(slot).activities;
-    const publication = this.#repository.weekArchive(slot)?.archive.public_schedule ?? this.#repository.publicSchedule(slot)?.schedule;
+    const publication = this.#publicScheduleForCurrentConfiguration(slot);
     const sessions = this.#sessionsForWeek(slot);
     const fridayDate = weekDayDate(slot, "friday");
     const theme = configuration?.theme ?? `Week ${slot.week_number}`;
     const description = configuration?.public_description ?? "The public week configuration has not been published yet.";
+    const header = `<section class="week-board-header"><div><span class="eyebrow">Cohort week ${slot.week_number}</span><h1>${escapeHtml(theme)}</h1><p>${escapeHtml(description)}</p></div><div class="week-board-range"><span>Monday</span><strong>${escapeHtml(displayDate(slot.start_date))}</strong><span>Friday</span><strong>${escapeHtml(displayDate(fridayDate))}</strong></div></section>`;
+    if (this.#publicCabinLoading && !configuration) return `${header}<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading published week…</section>`;
     const cards = WEEK_DAYS.map((day) => {
       const date = weekDayDate(slot, day);
-      const activities = publication?.activities.filter((activity) => activity.day === day)
-        ?? configuration?.activities.filter((activity) => activity.day === day)
+      const activities = configuration?.activities.filter((activity) => activity.day === day)
+        ?? publication?.activities.filter((activity) => activity.day === day)
         ?? defaultActivities.filter((activity) => activity.day === day);
       let detail: string;
-      const activityList = activities.length ? `<div class="day-card-events">${activities.slice(0, 2).map((activity) => `<div><strong>${escapeHtml(activity.name)}</strong>${activity.description ? `<p>${escapeHtml(activity.description)}</p>` : ""}${activityTime(activity) ? `<span>${escapeHtml(activityTime(activity))}</span>` : ""}${activity.location ? `<small>${escapeHtml(activity.location)}</small>` : ""}</div>`).join("")}</div>` : "";
+      const activityList = activities.length ? `<div class="day-card-events">${activities.slice(0, 2).map((activity) => {
+        const timing = activityTimingState(slot, activity);
+        const timeRange = activityTime(activity);
+        return `<div class="activity-timing-${timing}"><strong>${escapeHtml(activity.name)}</strong>${activity.description ? `<p>${escapeHtml(activity.description)}</p>` : ""}${timeRange ? `<span>${escapeHtml(timeRange)}</span>` : ""}${activity.location ? `<small>${escapeHtml(activity.location)}</small>` : ""}</div>`;
+      }).join("")}</div>` : "";
       if (day === "monday") {
         detail = `<p>${escapeHtml(description)}</p>${activityList}`;
       } else if (day === "friday") {
@@ -579,9 +625,7 @@ export class DemoDayApp {
       }
       return `<a class="day-card ${day === "friday" ? "day-card-friday" : ""}" href="#/week/${slot.week_number}/${day}" aria-label="Open ${WEEK_DAY_LABELS[day]} details"><span class="eyebrow">${escapeHtml(displayDate(date))}</span><h2>${WEEK_DAY_LABELS[day]}</h2>${detail}<span class="day-card-open">Open day →</span></a>`;
     }).join("");
-    return `<section class="week-board-header"><div><span class="eyebrow">Cohort week ${slot.week_number}</span><h1>${escapeHtml(theme)}</h1><p>${escapeHtml(description)}</p></div><div class="week-board-range"><span>Monday</span><strong>${escapeHtml(displayDate(slot.start_date))}</strong><span>Friday</span><strong>${escapeHtml(displayDate(fridayDate))}</strong></div></section>
-      ${this.#publicCabinLoading && !configuration ? `<p class="week-board-loading" aria-live="polite"><span class="spinner"></span> Loading week…</p>` : ""}
-      <section class="week-board" aria-label="Week ${slot.week_number} Monday through Friday">${cards}</section>`;
+    return `${header}<section class="week-board" aria-label="Week ${slot.week_number} Monday through Friday">${cards}</section>`;
   }
 
   #currentPublicWeek(): ProvisionedWeek | null {
@@ -599,6 +643,14 @@ export class DemoDayApp {
     const archive = this.#repository.weekArchive(slot)?.archive.configuration;
     if (archive) return { ...archive, status: "completed", intake_open: false, base_event_id: null };
     return this.#repository.getWeek(slot)?.configuration ?? null;
+  }
+
+  #publicScheduleForCurrentConfiguration(slot: ProvisionedWeek): PublicSchedule | null {
+    const archive = this.#repository.weekArchive(slot)?.archive;
+    if (archive) return archive.public_schedule ?? null;
+    const currentConfigurationEventId = this.#repository.getWeek(slot)?.event.id;
+    const publication = this.#repository.publicSchedule(slot)?.schedule;
+    return publication && currentConfigurationEventId && publication.source_configuration_event_id === currentConfigurationEventId ? publication : null;
   }
 
   #sessionsForWeek(slot: ProvisionedWeek): ParsedSession[] {
@@ -622,15 +674,18 @@ export class DemoDayApp {
     if (!slot) return `<section class="empty-state"><h1>Week not found</h1><a class="button button-primary" href="#/">Return to cohort week</a></section>`;
     const configuration = this.#publicConfiguration(slot);
     const defaultActivities = configuration ? [] : seedWeekConfiguration(slot).activities;
-    const publication = this.#repository.weekArchive(slot)?.archive.public_schedule ?? this.#repository.publicSchedule(slot)?.schedule;
+    const publication = this.#publicScheduleForCurrentConfiguration(slot);
     const date = weekDayDate(slot, day);
     const navigation = WEEK_DAYS.map((candidate) => `<a class="week-day-tab ${candidate === day ? "active" : ""} ${candidate === "friday" ? "friday" : ""}" href="#/week/${slot.week_number}/${candidate}" ${candidate === day ? 'aria-current="page"' : ""}>${WEEK_DAY_LABELS[candidate]}</a>`).join("");
-    const publishedActivities = publication?.activities.filter((activity) => activity.day === day) ?? [];
-    const activities = publishedActivities.length ? publishedActivities : configuration?.activities.filter((activity) => activity.day === day) ?? defaultActivities.filter((activity) => activity.day === day);
+    if (this.#publicCabinLoading && !configuration) return `<section class="day-page"><a class="back-link" href="#/">← Week ${slot.week_number}</a><header class="day-page-header"><span class="eyebrow">${escapeHtml(displayDate(date))} · Atlantic/Madeira</span><h1>${WEEK_DAY_LABELS[day]}</h1></header><nav class="week-day-tabs" aria-label="Week days">${navigation}</nav><section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading published schedule…</section></section>`;
+    const activities = configuration?.activities.filter((activity) => activity.day === day)
+      ?? publication?.activities.filter((activity) => activity.day === day)
+      ?? defaultActivities.filter((activity) => activity.day === day);
     const activityCards = activities.map((activity) => {
       const sessions = publication?.activities.find((candidate) => candidate.id === activity.id)?.sessions ?? [];
       const details = activityDetails(activity);
-      return `<article class="panel day-detail-panel">${details.length ? `<span class="eyebrow">${escapeHtml(details.join(" · "))}</span>` : ""}<h2>${escapeHtml(activity.name)}</h2>${activity.description ? `<p>${escapeHtml(activity.description)}</p>` : ""}${activity.link ? `<p><a href="${escapeAttr(activity.link)}" target="_blank" rel="noreferrer">Open event link ↗</a></p>` : ""}${sessions.length ? `<div class="day-session-list">${sessions.map((session) => `<section><span>${escapeHtml(session.starts_at)}–${escapeHtml(session.ends_at)}</span><h3>${escapeHtml(session.title)}</h3><p>${escapeHtml(session.presenter)}</p>${session.description ? `<p>${escapeHtml(session.description)}</p>` : ""}</section>`).join("")}</div>` : ""}</article>`;
+      const timing = activityTimingState(slot, activity);
+      return `<article class="panel day-detail-panel activity-timing-${timing}">${details.length ? `<span class="eyebrow">${escapeHtml(details.join(" · "))}</span>` : ""}<h2>${escapeHtml(activity.name)}</h2>${activity.description ? `<p>${escapeHtml(activity.description)}</p>` : ""}${activity.link ? `<p><a href="${escapeAttr(activity.link)}" target="_blank" rel="noreferrer">Open event link ↗</a></p>` : ""}${sessions.length ? `<div class="day-session-list">${sessions.map((session) => `<section><span>${escapeHtml(session.starts_at)}–${escapeHtml(session.ends_at)}</span><h3>${escapeHtml(session.title)}</h3><p>${escapeHtml(session.presenter)}</p>${session.description ? `<p>${escapeHtml(session.description)}</p>` : ""}</section>`).join("")}</div>` : ""}</article>`;
     }).join("");
     let content: string;
     if (day === "monday") {
@@ -692,13 +747,12 @@ export class DemoDayApp {
       return this.#renderProposalWorkspace(slot, persisted.event.id, persisted.configuration, signingPubkey);
     }
     if (persisted?.configuration.status === "completed") {
-      const publication = this.#repository.weekArchive(slot)?.archive.public_schedule ?? this.#repository.publicSchedule(slot)?.schedule;
+      const publication = this.#publicScheduleForCurrentConfiguration(slot);
       return `<section class="narrow-page week-workspace"><span class="eyebrow">Archived week ${slot.week_number}</span><h1>${escapeHtml(persisted.configuration.theme)}</h1><section class="panel"><h2>Read-only archive</h2><p>${escapeHtml(persisted.configuration.public_description)}</p><p>This completed week cannot be changed.</p>${publication ? `<p>${publication.activities.reduce((count, item) => count + item.sessions.length, 0)} published sessions.</p>` : ""}</section></section>`;
     }
     if (!this.#weekDraftBaseEvents.has(scope)) this.#weekDraftBaseEvents.set(scope, persisted?.event.id ?? null);
     const draft = this.#weekDraft(scope, seed);
     const readiness = validateWeekConfiguration(draft);
-    const draftChanged = JSON.stringify(draft) !== JSON.stringify(seed);
     const captain = this.#profile(slot.captain_pubkey);
     if (this.#weekPreview?.scope === scope) {
       if (this.#weekPreview.status === "loading") {
@@ -736,11 +790,9 @@ export class DemoDayApp {
       return `<section class="panel destructive-confirmation" role="dialog" aria-modal="true"><h2>Remove from draft?</h2><p>Remove “${escapeHtml(title)}” from this unpublished draft?</p><div class="form-actions"><button class="button button-secondary" data-action="cancel-week-removal">Cancel</button><button class="button button-danger" data-action="confirm-week-removal">${removeLabel}</button></div></section>`;
     })() : "";
     const readinessItems = [["Week details", "week_details"], ["Activities", "activities"], ["Proposal form", "proposal_form"], ["Demo Day timing", "demo_day_timing"]] as const;
-    const status = draftChanged ? "Changes ready to publish" : persisted ? "Setup published — intake closed" : "Draft";
     if (persisted) void this.#loadCabinData(slot, persisted.event.id, persisted.configuration, this.#cabinSigner());
-    return `<section class="narrow-page week-workspace"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>Week ${slot.week_number}</h1><p>${escapeHtml(slot.start_date)} – ${escapeHtml(slot.end_date)} · Atlantic/Madeira</p><p>Assigned captain: ${escapeHtml(captain.name)}</p><p class="week-status">${status}</p>${draftChanged ? `<p class="week-local-status" aria-live="polite">Changes saved locally</p>` : ""}
+    return `<section class="narrow-page week-workspace"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>Week ${slot.week_number}</h1><p>${escapeHtml(slot.start_date)} – ${escapeHtml(slot.end_date)} · Atlantic/Madeira</p><p>Assigned captain: ${escapeHtml(captain.name)}</p>
       ${confirmation}
-      ${this.#weekPublicationError ? `<section class="notice notice-error week-notice" role="alert"><p>${escapeHtml(this.#weekPublicationError)}</p><button class="button button-secondary" data-action="retry-week-publication">Try again</button></section>` : ""}
       <form class="panel form-stack" data-form-action="publish-week" data-draft-scope="${escapeAttr(scope)}"><h2>Week details</h2><label class="field"><span>Theme *</span><input id="week-theme" name="theme" data-week-field="config:theme" value="${escapeAttr(draft.theme)}" maxlength="120" aria-describedby="week-theme-error" ${readiness.sections.week_details.length ? 'aria-invalid="true"' : ""} /></label>${readiness.sections.week_details.length ? `<small id="week-theme-error" class="field-error">${escapeHtml(readiness.sections.week_details[0] ?? "")}</small>` : ""}<label class="field"><span>Public description *</span><textarea id="week-public-description" name="public_description" data-week-field="config:public_description" maxlength="4000" rows="4" aria-describedby="week-public-description-help">${escapeHtml(draft.public_description)}</textarea><small id="week-public-description-help">Visible in the public week preview.</small></label>
       <section class="week-subsection"><h2>Activities</h2>${group("monday", "Monday")}${group("tuesday", "Tuesday talks")}${group("wednesday", "Wednesday workshops")}${group("thursday", "Thursday")}${group("friday", "Friday")}</section>
       <section class="week-subsection"><h2>Proposal form</h2>${fields || `<div class="empty-state compact"><h3>No proposal fields yet</h3><p>Add a field before publishing this week.</p></div>`}<button class="button button-secondary" data-action="add-week-field" data-week-scope="${escapeAttr(scope)}">Add field</button></section>
@@ -1321,8 +1373,10 @@ export class DemoDayApp {
     try {
       const raw = globalThis.localStorage.getItem(`${WEEK_DRAFT_STORAGE_PREFIX}${scope}`);
       const stored = raw ? JSON.parse(raw) as { baseEventId?: unknown; draft?: unknown } : null;
-      const restored = stored && stored.baseEventId === (this.#weekDraftBaseEvents.get(scope) ?? null) ? parseWeekConfiguration(stored.draft) : null;
+      const restored = stored ? recoverWeekConfigurationDraft(stored.draft, seed) : null;
       if (restored && restored.cohort_id === seed.cohort_id && restored.week_number === seed.week_number) {
+        const storedBase = stored?.baseEventId;
+        if (storedBase === null || typeof storedBase === "string") this.#weekDraftBaseEvents.set(scope, storedBase);
         this.#weekDrafts.set(scope, restored);
         return restored;
       }
@@ -1625,7 +1679,7 @@ export class DemoDayApp {
     try {
       await operation();
     } catch (error) {
-      this.#notice = { kind: "error", text: error instanceof Error ? error.message : String(error) };
+      this.#notice = { kind: "error", title: `${label} failed`, text: error instanceof Error ? error.message : String(error) };
     } finally {
       this.#busy = null;
       this.requestRender();
@@ -2375,7 +2429,7 @@ export class DemoDayApp {
           ? error.message
           : "We couldn't publish this week. Check your Nostr connection and signing identity, then try again.";
         this.#weekPublicationError = message;
-        this.#notice = { kind: "error", text: message };
+        this.#notice = { kind: "error", title: "Week not published", text: message };
       }
     });
   }
@@ -2473,28 +2527,40 @@ export class DemoDayApp {
   }
 
   async #saveCabinSchedule(): Promise<void> {
-    const { signer, slot, week, scope } = this.#captainCabinContext();
+    const { signer, slot, scope } = this.#captainCabinContext();
     const stored = this.#privateSchedules.get(scope);
     if (!stored) throw new Error("Private schedule is unavailable");
     const latest = await this.#repository.refreshWeek(slot);
-    if (!latest || latest.event.id !== week.event.id || stored.schedule.configuration_event_id !== latest.event.id) throw new Error("Week configuration changed. Reload the schedule before saving.");
-    const schedule = { ...stored.schedule, base_event_id: stored.inner?.id ?? null, updated_at_ms: Date.now() };
+    if (!latest) throw new Error("Week configuration is unavailable");
+    const activityIds = new Set(latest.configuration.activities.map((activity) => activity.id));
+    const schedule = {
+      ...stored.schedule,
+      configuration_event_id: latest.event.id,
+      base_event_id: stored.inner?.id ?? null,
+      placements: stored.schedule.placements.filter((placement) => activityIds.has(placement.activity_id)),
+      updated_at_ms: Date.now(),
+    };
     const built = await buildPrivateScheduleEventWithSigner({ schedule, slot, signer, createdAt: nextCreatedAt(stored.inner?.created_at) });
-    await this.#repository.publish(built.wrap);
+    await this.#repository.publishConfirmed(built.wrap);
     this.#privateSchedules.set(scope, { event: built.wrap, inner: built.inner, schedule });
-    this.#notice = { kind: "success", text: "Private schedule saved. Nothing public changed." };
+    this.#notice = { kind: "success", title: "Private schedule saved", text: "The encrypted schedule was read back from a relay. Nothing public changed." };
   }
 
   async #publishCabinSchedule(): Promise<void> {
-    const { signer, slot, week, scope } = this.#captainCabinContext();
-    const stored = this.#privateSchedules.get(scope);
+    const { signer, slot, scope } = this.#captainCabinContext();
+    let stored = this.#privateSchedules.get(scope);
     if (!stored?.inner) throw new Error("Save the private schedule before publishing");
     const latest = await this.#repository.refreshWeek(slot);
-    if (!latest || latest.event.id !== week.event.id || stored.schedule.configuration_event_id !== latest.event.id) throw new Error("Week configuration changed. Save a fresh private schedule first.");
+    if (!latest) throw new Error("Week configuration is unavailable");
+    if (stored.schedule.configuration_event_id !== latest.event.id) {
+      await this.#saveCabinSchedule();
+      stored = this.#privateSchedules.get(scope);
+      if (!stored?.inner || stored.schedule.configuration_event_id !== latest.event.id) throw new Error("The private schedule could not be updated to the current week configuration");
+    }
     const publication = publicScheduleProjection(stored.schedule, latest.configuration, stored.inner.id, `publication-${slot.week_number}-${randomHex(8)}`, Date.now());
     const event = await buildPublicScheduleEventWithSigner({ schedule: publication, slot, signer, createdAt: nextCreatedAt(this.#repository.publicSchedule(slot)?.event.created_at) });
-    await this.#repository.publish(event);
-    this.#notice = { kind: "success", text: "Public schedule published deliberately." };
+    await this.#repository.publishConfirmed(event);
+    this.#notice = { kind: "success", title: "Public schedule published", text: "The exact signed public schedule was read back from a relay." };
   }
 
   async #archiveCabinWeek(): Promise<void> {
@@ -2542,7 +2608,7 @@ export class DemoDayApp {
         this.#weekDrafts.set(scope, structuredClone(acceptedPending.configuration));
         this.#weekDraftBaseEvents.set(scope, acceptedPending.event.id);
         this.#discardStoredWeekDraft(scope);
-        this.#notice = { kind: "success", text: "Week published. Intake remains closed." };
+        this.#notice = { kind: "success", title: "Week published", text: "Your exact signed configuration was read back from a relay. Intake remains closed." };
         return;
       }
       throw new Error("The signed week configuration is still queued for relay delivery. Try again after reconnecting.");
@@ -2566,7 +2632,7 @@ export class DemoDayApp {
     this.#weekDrafts.set(scope, structuredClone(accepted.configuration));
     this.#weekDraftBaseEvents.set(scope, accepted.event.id);
     this.#discardStoredWeekDraft(scope);
-    this.#notice = { kind: "success", text: "Week published. Intake remains closed." };
+    this.#notice = { kind: "success", title: "Week published", text: "Your exact signed configuration was read back from a relay. Intake remains closed." };
   }
 
   async #connectNip07(): Promise<void> {
