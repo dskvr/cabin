@@ -2,9 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { APP_KIND } from "../dist/assets/config/relays.js";
+import { parseCohortManifest, deriveProvisionedWeeks } from "../dist/assets/domain/cohort.js";
+import { seedWeekConfiguration } from "../dist/assets/domain/week.js";
+import { npubEncode } from "../dist/assets/nostr/bech32.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
 import { buildExport } from "../dist/assets/domain/export.js";
-import { buildEntryEvent, buildSessionEvent, copyProfileToEphemeralKey } from "../dist/assets/nostr/event-builders.js";
+import { buildEntryEvent, buildSessionEvent, buildWeekConfigurationEvent, copyProfileToEphemeralKey } from "../dist/assets/nostr/event-builders.js";
 import { parseParticipantEntryEvent } from "../dist/assets/nostr/event-parsers.js";
 import { finalizeEvent, getPublicKey } from "../dist/assets/nostr/crypto.js";
 import { NostrRepository } from "../dist/assets/nostr/repository.js";
@@ -57,6 +60,36 @@ function makeEntry({ realPubkey, sourceId, name, ranking = [], feedback = {}, up
     updated_at_ms: updatedAt,
   };
 }
+
+test("manifest-assigned captain publishes and reads a complete week configuration", async () => {
+  const captainSecret = key(71);
+  const captainPubkey = getPublicKey(captainSecret);
+  const manifest = parseCohortManifest({
+    v: 1,
+    cohort_id: "madeira-2026",
+    start_date: "2026-01-07",
+    end_date: "2026-02-03",
+    starting_week: 3,
+    captains: [{ week_number: 3, npub: npubEncode(captainPubkey) }],
+    participant_allowlist: [npubEncode(getPublicKey(key(72)))],
+  });
+  assert.ok(manifest, "valid deployment manifest is accepted");
+  const [slot] = deriveProvisionedWeeks(manifest);
+  assert.ok(slot);
+  assert.equal(slot.week_number, 3);
+
+  const draft = seedWeekConfiguration(slot, { theme: "Nostr in Madeira", public_description: "A signed, intake-closed week." });
+  const event = await buildWeekConfigurationEvent({ slot, configuration: draft, secretKeyHex: captainSecret, createdAt: 100 });
+  const repository = new NostrRepository(new InMemoryTestTransport());
+  await repository.publish(event);
+  await repository.refreshWeek(slot);
+  const loaded = repository.getWeek(slot);
+  assert.ok(loaded, "repository returns only the verified manifest-bound configuration");
+  assert.equal(loaded.configuration.theme, "Nostr in Madeira");
+  assert.equal(loaded.configuration.public_description, "A signed, intake-closed week.");
+  assert.equal(loaded.configuration.intake_open, false);
+  assert.equal(repository.getWeek({ ...slot, captain_pubkey: getPublicKey(key(73)) }), null, "wrong-author coordinates cannot read the state");
+});
 
 test("multi-client captain, participant, display-state, ranking, closure, and export flow", async () => {
   const transport = new InMemoryTestTransport();
