@@ -6,6 +6,9 @@ import {
   PROFILE_SEARCH_RELAYS,
   QUESTIONS_MS,
 } from "../config/relays.js";
+import { COHORT_MANIFEST } from "../config/cohort.js";
+import { parseCohortManifest, weekForCaptain } from "../domain/cohort.js";
+import { parseWeekConfiguration, seedWeekConfiguration } from "../domain/week.js";
 import { calculateElo, rankElo } from "../domain/elo.js";
 import { buildExport, downloadJson, exportFilename } from "../domain/export.js";
 import { calculateFollowSuggestions } from "../domain/follows.js";
@@ -37,6 +40,7 @@ import { decodeNpub, npubEncode } from "../nostr/bech32.js";
 import {
   buildEntryEvent,
   buildSessionEvent,
+  buildWeekConfigurationEvent,
   createPresenterZapRequest,
 } from "../nostr/event-builders.js";
 import { parseParticipantEntryEvent } from "../nostr/event-parsers.js";
@@ -432,11 +436,35 @@ export class DemoDayApp {
       </article>`;
     }).join("");
 
-    return `${activeSessionCount === 0 ? `<section class="hero">
+    return `${this.#renderWeekConfiguration()}
+    ${activeSessionCount === 0 ? `<section class="hero">
       <h1>SOVEREIGN ENGINEERING<br>Demo Day</h1>
       <a class="button button-primary button-large" href="#/create">I AM THE CAPTAIN NOW</a>
     </section>` : ""}
     <section class="card-grid">${cards || `<div class="empty-state compact"><h3>No active demo days found</h3><p>The app is listening on the ten fixed relays. You can start the first session.</p></div>`}</section>`;
+  }
+
+  #renderWeekConfiguration(): string {
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    const identity = loadIdentity();
+    if (!manifest || !identity) {
+      return `<section class="panel" aria-live="polite"><span class="spinner"></span> Loading week configuration…</section>`;
+    }
+    const slot = weekForCaptain(manifest, identity.public_key_hex);
+    if (!slot) return `<section class="panel"><h2>Week configuration</h2><p>This identity is not assigned a week to configure.</p></section>`;
+    const persisted = this.#repository.getWeek(slot);
+    const seed = persisted?.configuration ?? seedWeekConfiguration(slot, { theme: "Week ${slot.week_number}", public_description: "" });
+    const scope = `week-${slot.week_number}`;
+    const theme = this.#draft(scope, "theme", seed.theme);
+    const description = this.#draft(scope, "public_description", seed.public_description);
+    return `<section class="narrow-page"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>${persisted ? "Update week configuration" : "Configure your week"}</h1>
+      <form class="panel form-stack" data-form-action="publish-week" data-draft-scope="${escapeAttr(scope)}">
+        ${field({ label: "Theme", name: "theme", value: theme, required: true, maxlength: 120 })}
+        ${textarea({ label: "Public description", name: "public_description", value: description, required: true, maxlength: 4000, rows: 4 })}
+        <p>Intake remains closed until a later phase enables it.</p>
+        <div class="form-actions"><button class="button button-primary" type="submit">${persisted ? "Publish changes" : "Create week"}</button></div>
+      </form>
+    </section>`;
   }
 
   #renderCreate(): string {
@@ -1793,6 +1821,10 @@ export class DemoDayApp {
       void this.#withBusy("Creating demo day", () => this.#createSession(data));
       return;
     }
+    if (action === "publish-week") {
+      void this.#withBusy("Publishing week configuration", () => this.#publishWeek(data));
+      return;
+    }
     if (action === "join-session") {
       void this.#withBusy("Joining demo day", () => this.#joinSession(data));
       return;
@@ -1851,6 +1883,37 @@ export class DemoDayApp {
       });
     }
   };
+
+  async #publishWeek(formData: FormData): Promise<void> {
+    const identity = loadIdentity();
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    if (!identity || !manifest) throw new Error("Week configuration is not ready");
+    const slot = weekForCaptain(manifest, identity.public_key_hex);
+    if (!slot) throw new Error("This identity is not assigned a week to configure.");
+    const scope = `week-${slot.week_number}`;
+    const loaded = this.#repository.getWeek(slot);
+    await this.#repository.refreshWeek(slot);
+    const latest = this.#repository.getWeek(slot);
+    if ((loaded?.event.id ?? null) !== (latest?.event.id ?? null)) {
+      throw new Error("This week changed elsewhere. Reload and reapply your draft before publishing.");
+    }
+    const configuration = {
+      ...(latest?.configuration ?? seedWeekConfiguration(slot, { theme: "Week " + slot.week_number, public_description: "" })),
+      theme: String(formData.get("theme") ?? ""),
+      public_description: String(formData.get("public_description") ?? ""),
+      base_event_id: latest?.event.id ?? null,
+    };
+    const valid = parseWeekConfiguration(configuration);
+    if (!valid) throw new Error("Enter a theme and public description within the allowed limits.");
+    const event = await buildWeekConfigurationEvent({
+      slot, configuration: valid, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(latest?.event.created_at),
+    });
+    await this.#repository.publish(event);
+    await this.#repository.refreshWeek(slot);
+    if (!this.#repository.getWeek(slot)) throw new Error("The signed week configuration was not read back from the repository.");
+    this.#clearDraftScope(scope);
+    this.#notice = { kind: "success", text: "Week published. Intake remains closed." };
+  }
 
   readonly #onClick = (event: MouseEvent): void => {
     const target = event.target;

@@ -13,10 +13,12 @@ import type {
   RelayEvent,
   SelectedSession,
 } from "../domain/types.js";
+import { weekD, type ProvisionedWeek } from "../domain/cohort.js";
+import type { ParsedWeekConfiguration } from "./event-parsers.js";
 import { dedupe } from "../domain/utils.js";
 import { verifyEvent } from "./crypto.js";
 import { EventIndex } from "./event-index.js";
-import { parseParticipantEntryEvent, parseSessionEvent } from "./event-parsers.js";
+import { parseParticipantEntryEvent, parseSessionEvent, parseWeekConfigurationEvent } from "./event-parsers.js";
 import type { NostrTransport } from "./transport.js";
 
 interface PendingPublish {
@@ -204,6 +206,23 @@ export class NostrRepository {
     if (!event) return null;
     const parsed = parseSessionEvent(event);
     return parsed && parsed.address === selected.address ? parsed : null;
+  }
+
+  getWeek(slot: ProvisionedWeek): ParsedWeekConfiguration | null {
+    const event = this.#index.get(`${APP_KIND}:${slot.captain_pubkey}:${weekD(slot)}`);
+    return event ? parseWeekConfigurationEvent(event, slot) : null;
+  }
+
+  async refreshWeek(slot: ProvisionedWeek): Promise<void> {
+    await this.queryRaw(DEFAULT_RELAYS, {
+      kinds: [APP_KIND], authors: [slot.captain_pubkey], "#d": [weekD(slot)], limit: 20,
+    });
+  }
+
+  subscribeWeek(slot: ProvisionedWeek): () => void {
+    return this.#transport.subscribe(DEFAULT_RELAYS, {
+      kinds: [APP_KIND], authors: [slot.captain_pubkey], "#d": [weekD(slot)],
+    }, { onevent: (item) => void this.ingest(item) });
   }
 
   entriesForSession(address: string): ParsedEntry[] {

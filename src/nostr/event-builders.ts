@@ -5,9 +5,14 @@ import type {
   ParticipantEntryV1,
   ProfileMetadata,
 } from "../domain/types.js";
+import { isAssignedCaptain } from "../domain/authorization.js";
+import type { ProvisionedWeek } from "../domain/cohort.js";
+import { weekD } from "../domain/cohort.js";
+import type { WeekConfigurationV1 } from "../domain/week.js";
+import { parseWeekConfiguration } from "../domain/week.js";
 import { cloneTags, entryD } from "../domain/utils.js";
 import { encodeLnurl } from "./bech32.js";
-import { finalizeEvent } from "./crypto.js";
+import { finalizeEvent, getPublicKey } from "./crypto.js";
 
 export async function buildSessionEvent({
   sessionD,
@@ -32,6 +37,29 @@ export async function buildSessionEvent({
     },
     secretKeyHex,
   );
+}
+
+export async function buildWeekConfigurationEvent({
+  slot,
+  configuration,
+  secretKeyHex,
+  createdAt,
+}: {
+  slot: ProvisionedWeek;
+  configuration: WeekConfigurationV1;
+  secretKeyHex: string;
+  createdAt: number;
+}): Promise<NostrEvent> {
+  const signer = getPublicKey(secretKeyHex);
+  if (!isAssignedCaptain(slot, signer)) throw new Error("Only the assigned captain can configure this week");
+  if (configuration.cohort_id !== slot.cohort_id || configuration.week_number !== slot.week_number) throw new Error("Week configuration does not match its manifest slot");
+  if (!parseWeekConfiguration(configuration)) throw new Error("Week configuration is incomplete or invalid");
+  return finalizeEvent({
+    kind: APP_KIND,
+    created_at: createdAt,
+    tags: [["d", weekD(slot)], ["t", "captains-cabin-week"]],
+    content: JSON.stringify(configuration),
+  }, secretKeyHex);
 }
 
 export async function buildEntryEvent({

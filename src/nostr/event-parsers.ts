@@ -15,6 +15,29 @@ import {
   isValidHexPubkey,
   sessionAddress,
 } from "../domain/utils.js";
+import { isAssignedCaptain } from "../domain/authorization.js";
+import { weekAddress, weekD, type ProvisionedWeek } from "../domain/cohort.js";
+import { parseWeekConfiguration, type WeekConfigurationV1 } from "../domain/week.js";
+
+export interface ParsedWeekConfiguration {
+  event: NostrEvent;
+  configuration: WeekConfigurationV1;
+  d: string;
+  address: string;
+}
+
+export function parseWeekConfigurationEvent(event: NostrEvent, slot: ProvisionedWeek): ParsedWeekConfiguration | null {
+  if (event.kind !== APP_KIND || !isAssignedCaptain(slot, event.pubkey) || !hasTag(event, "t", "captains-cabin-week")) return null;
+  const d = getTag(event, "d");
+  if (d !== weekD(slot)) return null;
+  const configuration = parseWeekConfiguration(safeJson(event.content));
+  if (!configuration || configuration.cohort_id !== slot.cohort_id || configuration.week_number !== slot.week_number) return null;
+  return { event, configuration, d, address: weekAddress(slot) };
+}
+
+function safeJson(content: string): unknown {
+  try { return JSON.parse(content) as unknown; } catch { return null; }
+}
 
 function isSafeMs(value: unknown, nullable = false): value is number | null {
   return (nullable && value === null) || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
