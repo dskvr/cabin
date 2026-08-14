@@ -23,17 +23,19 @@ Each captain can tailor and publish their week without requiring code changes, w
 
 - [ ] Captains can create a week from Tuesday-talk and Wednesday-workshop templates
 - [ ] Captains can add, remove, rename, and reschedule activities within a week
+- [ ] All v1 week dates and times use the `Atlantic/Madeira` timezone
 - [ ] Captains can customize standard talk and workshop intake fields, including field names and required status
 - [ ] Captains can configure Demo Day presentation and question durations per week, starting from defaults of 6 minutes and 2 minutes
-- [ ] Whitelisted participants can privately submit proposals and availability for the active week
+- [ ] Whitelisted participants can submit encrypted captain-private proposals for the active week and amend their own proposals
 - [ ] Captains can review participant submissions and assemble the week schedule
 - [ ] Captains can publish a finalized schedule for public viewing
-- [ ] Captains can archive completed weeks and clone an earlier week as the basis for a new one
+- [ ] Captains can archive completed weeks and clone any previous configuration as the basis for a new week
 
 ### Out of Scope
 
 - Fully arbitrary event construction with no Tuesday/Wednesday templates — v1 should preserve useful structure while allowing captains to adapt it
 - New live moderation and session-operator tooling beyond the existing Demo Day timer — deferred until scheduling and publication are proven
+- Participant availability collection — proposals are sufficient for the first milestone
 - Reminders, attendance tracking, and post-event feedback — deferred beyond the first milestone
 - Public participant proposals, availability, or personal details — private intake is visible only to the captain
 
@@ -51,7 +53,8 @@ The existing Demo Day timer remains part of the product. New weeks default to 6 
 
 - **Identity and interaction**: Continue using Nostr for participant identity and application interactions — this is a defining property of the product
 - **Authorization**: Only whitelisted participants may submit or interact, and captain-only operations must be enforced independently of the UI — existing trust boundaries must remain intact
-- **Privacy**: Published schedules are public, while proposals, availability, and participant details are captain-only — Nostr event design must account for relay visibility
+- **Privacy**: Published schedules are public, while proposals and non-public participant details are captain-only — Nostr event design must account for relay visibility
+- **Timezone**: All v1 scheduling uses `Atlantic/Madeira` — captain-selectable timezones are deferred
 - **Configurability**: Captain-controlled themes, times, activities, intake fields, and Demo Day durations must be data-driven — weekly changes cannot require a deployment
 - **Timing defaults**: New Demo Days start at 6 minutes presenting and 2 minutes questions, with explicit per-week captain overrides — defaults must not prevent formats such as 60 seconds plus 2 minutes
 - **Compatibility**: Extend the existing static browser application and repository/transport boundaries unless a later phase explicitly justifies infrastructure changes
@@ -62,12 +65,14 @@ The existing Demo Day timer remains part of the product. New weeks default to 6 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Use editable Tuesday-talk and Wednesday-workshop templates | Gives captains a strong starting structure without hard-coding each week's shape | — Pending |
-| Collect proposals and availability before the captain schedules sessions | Matches the intended participant-first scheduling workflow | — Pending |
+| Collect participant proposals before the captain schedules sessions | Matches the intended participant-first scheduling workflow without adding availability collection to v1 | — Pending |
 | Limit the first milestone to configuration, intake, scheduling, and publication | Delivers the core operational loop before adding live-event or follow-up tooling | — Pending |
 | Start with standard intake fields that captains can add, remove, require, or rename | Provides flexibility without the complexity of a general-purpose form builder | — Pending |
 | Archive weeks and allow cloning | Preserves history and makes recurring setup efficient | — Pending |
-| Publish schedules publicly while keeping intake captain-only | Makes the event easy to discover without exposing participant details or availability | — Pending |
+| Publish schedules publicly while keeping intake captain-only | Makes the event easy to discover without exposing proposal or non-public participant details | — Pending |
 | Default Demo Day timing to 6 minutes presenting and 2 minutes questions, with captain overrides | Preserves the familiar format while allowing each captain to change the week without code edits | — Pending |
+| Encrypt proposal delivery to the captain through Nostr | Relay-visible ordinary events cannot satisfy the captain-only privacy requirement | — Pending |
+| Use `Atlantic/Madeira` for all v1 schedules | One known timezone keeps the first milestone focused while remaining correct across Madeira clock changes | — Pending |
 
 ## Evolution
 
@@ -87,4 +92,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-08-14 after initialization*
+*Last updated: 2026-08-14 after requirements scoping*
