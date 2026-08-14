@@ -635,6 +635,9 @@ test("week workspace ships every loading, error, retry, accessibility, and respo
   assert.match(css, /min-height: 44px/);
   assert.match(app, /!persisted && !captainSlot/, "a participant waits for the captain's first publication");
   assert.match(app, /persisted \? "Publish changes" : "Create week"/, "an assigned captain can create the first week event");
+  assert.match(app, /class="captain-action-dock" aria-label="Captain actions"/);
+  assert.match(app, /form="week-configuration-form"/, "the floating publish action submits the complete week form");
+  assert.match(css, /@media \(min-width: 1320px\) \{[\s\S]*\.captain-action-dock \{[\s\S]*position: fixed;[\s\S]*max-height: calc\(100dvh - 142px\)/);
   for (const day of ["monday", "tuesday", "wednesday", "thursday", "friday"]) assert.match(app, new RegExp(`group\\("${day}"`));
   assert.match(app, /data-day="\$\{day\}"/);
   assert.doesNotMatch(app, /data-week-field="activity:date"/, "an activity inherits the date of its selected weekday");

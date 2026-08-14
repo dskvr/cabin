@@ -2644,6 +2644,33 @@ footer a:hover {
 .week-workspace > .panel { margin: 0; }
 .week-workspace > h1 { margin: 0; font-size: 48px; font-weight: 700; line-height: 1.1; overflow-wrap: anywhere; }
 .week-workspace > p { margin: -16px 0 0; overflow-wrap: anywhere; }
+.captain-action-dock {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid var(--line-strong);
+  background: rgba(7, 15, 27, .97);
+  box-shadow: 0 0 38px rgba(97, 233, 255, .1), 8px 8px 0 rgba(90, 48, 155, .18);
+}
+.captain-action-dock > .eyebrow,
+.captain-action-divider { grid-column: 1 / -1; }
+.captain-action-dock .button { width: 100%; min-width: 0; }
+.captain-action-divider { height: 1px; margin-block: 4px; background: var(--line); }
+@media (min-width: 1320px) {
+  .captain-action-dock {
+    position: fixed;
+    z-index: 25;
+    top: 118px;
+    right: max(var(--content-gutter), calc((100vw - 1400px) / 2));
+    width: clamp(220px, calc((100vw - 920px) / 2), 280px);
+    max-height: calc(100dvh - 142px);
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+  .captain-action-dock > .eyebrow,
+  .captain-action-divider { grid-column: 1; }
+}
 .week-state-panel, .week-preview { min-width: 0; overflow-wrap: anywhere; }
 .week-loading-state {
   min-height: min(52vh, 520px);
