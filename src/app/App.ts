@@ -70,6 +70,7 @@ import { decodeNpub, npubEncode } from "../nostr/bech32.js";
 import { getPublicKey } from "../nostr/crypto.js";
 import {
   buildEntryEvent,
+  buildEntryDeletionEvent,
   buildPrivateProposalEventsWithSigner,
   buildPrivateScheduleEventWithSigner,
   buildPublicScheduleEventWithSigner,
@@ -661,10 +662,32 @@ export class DemoDayApp {
     return this.#repository.sessions().filter((session) => sessionBelongsToWeek(session.state, slot));
   }
 
+  #entryForSignedInParticipant(address: string, entries = this.#repository.entriesForSession(address)): ParsedEntry | null {
+    if (this.#nip07Pubkey) {
+      const signedIn = entries.find((entry) => entry.author === this.#nip07Pubkey || entry.content.real_pubkey === this.#nip07Pubkey);
+      if (signedIn) return signedIn;
+    }
+    const legacyIdentity = loadIdentity();
+    return legacyIdentity ? entries.find((entry) => entry.author === legacyIdentity.public_key_hex) ?? null : null;
+  }
+
+  #isSessionCaptain(session: ParsedSession, pubkey = this.#nip07Pubkey): boolean {
+    if (!pubkey) return false;
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    const slot = manifest ? deriveProvisionedWeeks(manifest).find((candidate) => candidate.cohort_id === session.state.cohort_id && candidate.week_number === session.state.week_number) : null;
+    return slot?.captain_pubkey === pubkey;
+  }
+
+  #isSessionParticipant(session: ParsedSession, pubkey = this.#nip07Pubkey): boolean {
+    if (!pubkey) return false;
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    if (!manifest || manifest.cohort_id !== session.state.cohort_id) return false;
+    return manifest.participant_allowlist.includes(pubkey) || this.#isSessionCaptain(session, pubkey);
+  }
+
   #renderDemoSessionCard(session: ParsedSession): string {
-    const identity = getOrCreateIdentity();
     const entries = this.#repository.entriesForSession(session.address);
-    const hasDemo = entries.some((entry) => entry.author === identity.public_key_hex);
+    const hasDemo = Boolean(this.#entryForSignedInParticipant(session.address, entries));
     const captain = this.#profile(session.event.pubkey);
     const naddr = sessionNaddr(session.event.pubkey, session.d);
     const closed = session.state.closed_at_ms !== null;
@@ -931,20 +954,18 @@ export class DemoDayApp {
     if (displayMode) return this.#renderDisplay(session, entries);
     if (session.state.closed_at_ms !== null) return this.#renderClosedSummary(session);
 
-    const identity = getOrCreateIdentity();
-    const ownEntry = this.#repository.entryForParticipant(session.address, identity.public_key_hex)
-      ?? (this.#nip07Pubkey ? entries.find((entry) => entry.author === this.#nip07Pubkey || entry.content.real_pubkey === this.#nip07Pubkey) ?? null : null);
-    if (!ownEntry && session.event.pubkey === identity.public_key_hex && this.#nip07Pubkey) return this.#renderCaptainSessionWithoutEntry(session, entries);
-    if (ownEntry) return this.#renderParticipantSession(session, entries, ownEntry, this.#nip07Pubkey ?? identity.public_key_hex);
-    if (!this.#identityReady(identity)) {
-      return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><h1>Who are you?</h1>${this.#renderProfileImport(identity)}</section>`;
-    }
-    return this.#renderJoinForm(session, identity);
+    if (!this.#nip07Pubkey) return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><section class="panel"><h1>Login to join Demo Day</h1><p>Use the NIP-07 login in the header.</p></section></section>`;
+    const ownEntry = this.#entryForSignedInParticipant(session.address, entries);
+    const isCaptain = this.#isSessionCaptain(session);
+    if (ownEntry) return this.#renderParticipantSession(session, entries, ownEntry, isCaptain);
+    if (isCaptain) return this.#renderCaptainSessionWithoutEntry(session, entries);
+    if (!this.#isSessionParticipant(session)) return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><section class="panel"><h1>Participant access required</h1><p>This NIP-07 account is not on the cohort allowlist.</p></section></section>`;
+    return this.#renderJoinForm(session, this.#nip07Pubkey);
   }
 
-  #renderJoinForm(session: ParsedSession, identity: LocalIdentityV1): string {
+  #renderJoinForm(session: ParsedSession, participantPubkey: string): string {
     const captain = this.#profile(session.event.pubkey);
-    const participant = this.#profile(identity.public_key_hex);
+    const participant = this.#profile(participantPubkey);
     return `<section class="narrow-page join-page">
       <a class="back-link" href="#/">← Active demo days</a>
       <h1>${escapeHtml(session.state.name)}</h1>
@@ -1003,10 +1024,9 @@ export class DemoDayApp {
     session: ParsedSession,
     entries: ParsedEntry[],
     ownEntry: ParsedEntry,
-    identityPubkey: string,
+    isCaptain: boolean,
   ): string {
     const captain = this.#profile(session.event.pubkey);
-    const isCaptain = identityPubkey === session.event.pubkey;
     const completed = session.state.presented.map((run) => run.pubkey);
     const current = session.state.current_demo_pubkey
       ? entries.find((entry) => entry.author === session.state.current_demo_pubkey) ?? null
@@ -1212,14 +1232,15 @@ export class DemoDayApp {
           <p class="project-description">${escapeHtml(entry.content.demo.description)}</p>
           ${isLive ? `<div class="project-stats"><span>⚡ ${projectReceipts.length} zaps</span><span>${sats.toLocaleString()} sats</span></div>` : ""}
           <div class="project-links">${entry.content.demo.link ? `<a href="${escapeAttr(entry.content.demo.link)}" target="_blank" rel="noreferrer">Open project ↗</a>` : ""}${isLive && canZap && entry.author !== ownEntry.author ? button("⚡ Zap", "open-zap", { className: "button button-zap button-small", attrs: `data-entry-author="${escapeAttr(entry.author)}"` }) : ""}</div>
-          ${entry.author === ownEntry.author ? this.#renderOwnDemoEditor(ownEntry) : ""}
+          ${entry.author === ownEntry.author ? this.#renderOwnDemoEditor(session, ownEntry) : ""}
           ${run ? `<details class="project-details" ${editingFeedback ? "open" : ""}><summary>View project details</summary><div class="project-feedback"><span>${feedback.length} feedback · ${projectReceipts.length} zaps</span>${entry.author !== ownEntry.author && (!hasOwnFeedback || editingFeedback) ? `<form class="feedback-form" data-form-action="save-feedback" data-demo-author="${escapeAttr(entry.author)}" data-draft-scope="feedback-${escapeAttr(entry.author)}" data-saved-note="${escapeAttr(ownFeedback.liked)}" data-note-saved="${hasSavedFeedback}"><h4>${editingFeedback ? "Edit your feedback" : "Your feedback"}</h4>${textarea({ label: "What did you like?", name: "liked", value: ownFeedbackDraft, maxlength: 280, rows: 3 })}<button class="button button-secondary" type="submit" data-unsaved-label="${editingFeedback ? "Save changes" : "Save feedback"}" ${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "disabled" : ""}>${editingFeedback && hasSavedFeedback && ownFeedbackDraft === ownFeedback.liked ? "✓ Saved" : editingFeedback ? "Save changes" : "Save feedback"}</button></form>` : ""}<div class="feedback-columns"><div>${feedback.length ? `<div class="feedback-results"><h4>What people liked</h4>${feedback.map((item) => { const reviewer = this.#profile(item.reviewer.author); const edit = item.reviewer.author === ownEntry.author ? button("Edit", "edit-feedback", { className: "button button-quiet button-small", attrs: `data-demo-author="${escapeAttr(entry.author)}"` }) : ""; return feedbackQuote(item.response.liked, item.reviewer.author, reviewer.name, reviewer.picture, edit); }).join("")}</div>` : `<h4>What people liked</h4><p>No responses.</p>`}</div><div class="zap-comments"><h4>Zaps</h4>${groupZapReceipts(projectReceipts).map((group) => zapMessage(group, group[0]?.senderPubkey ? this.#profile(group[0].senderPubkey) : null)).join("") || `<p>No zaps.</p>`}</div></div></div></details>` : ""}
         </article>`;
       }).join("")}</div>
     </section>`;
   }
 
-  #renderOwnDemoEditor(ownEntry: ParsedEntry): string {
+  #renderOwnDemoEditor(session: ParsedSession, ownEntry: ParsedEntry): string {
+    const locked = session.state.current_demo_pubkey === ownEntry.author || session.state.presented.some((run) => run.pubkey === ownEntry.author);
     return `<details class="demo-editor"><summary class="button button-secondary button-small">Edit demo</summary>
       <form class="form-stack" data-form-action="edit-demo" data-draft-scope="edit-demo">
         ${field({ label: "Demo name", name: "demo_name", value: this.#draft("edit-demo", "demo_name", ownEntry.content.demo.name), required: true, maxlength: 140 })}
@@ -1227,6 +1248,7 @@ export class DemoDayApp {
         ${field({ label: "Link — optional", name: "demo_link", value: this.#draft("edit-demo", "demo_link", ownEntry.content.demo.link ?? ""), type: "url" })}
         <button class="button button-secondary" type="submit">Save demo details</button>
       </form>
+      <div class="danger-zone"><div><strong>Delete my demo</strong><span>${locked ? "A demo cannot be deleted after it starts presenting." : "Publishes a signed NIP-09 deletion and removes this project from the roster."}</span></div>${button("DELETE MY DEMO", "delete-own-demo", { className: "button button-danger", disabled: locked })}</div>
     </details>`;
   }
 
@@ -1885,18 +1907,33 @@ export class DemoDayApp {
 
   async #joinSession(formData: FormData): Promise<void> {
     const session = this.#currentSession();
-    const identity = loadIdentity();
-    if (!session || !identity || !this.#identityReady(identity)) throw new Error("Session or identity is not ready");
+    if (!session || !this.#nip07Pubkey) throw new Error("Login with NIP-07 to join this Demo Day");
     if (session.state.closed_at_ms !== null) throw new Error("This demo day is closed");
+    if (!this.#isSessionParticipant(session)) throw new Error("This NIP-07 account is not on the cohort allowlist");
+    if (this.#entryForSignedInParticipant(session.address)) throw new Error("You have already submitted a project to this Demo Day");
     const demo = this.#formDemo(formData);
-    const profile = this.#repository.getProfile(identity.public_key_hex) ?? await this.#repository.ensureProfile(identity.public_key_hex);
-    if (!profile) throw new Error("Copied profile is not available");
+    const found = await findRealProfile({ repository: this.#repository, realPubkey: this.#nip07Pubkey });
+    if (!found) throw new Error("Your Nostr profile could not be loaded from the configured relays");
+    const identity = getOrCreateIdentity();
+    const imported = await importProfile({
+      repository: this.#repository,
+      identity,
+      sourceEvent: found.event,
+      sourceRelay: found.relay,
+    });
+    const boundIdentity = attachImportedProfile({
+      realPubkey: this.#nip07Pubkey,
+      realNpub: npubEncode(this.#nip07Pubkey),
+      sourceProfileEventId: found.event.id,
+      sourceProfileRelay: found.relay,
+      copiedProfileEventId: imported.copiedEvent.id,
+    });
     const entry: ParticipantEntryV1 = {
       v: 1,
       type: "entry",
-      real_pubkey: identity.real_pubkey_hex as string,
-      source_profile_event_id: identity.source_profile_event_id as string,
-      source_profile_relay: identity.source_profile_relay as string,
+      real_pubkey: this.#nip07Pubkey,
+      source_profile_event_id: found.event.id,
+      source_profile_relay: found.relay,
       demo,
       ranking: [],
       feedback: {},
@@ -1906,25 +1943,26 @@ export class DemoDayApp {
       sessionAddress: session.address,
       sessionD: session.d,
       entry,
-      profile: parseProfileMetadata(profile),
-      secretKeyHex: identity.secret_key_hex,
+      profile: parseProfileMetadata(found.event),
+      secretKeyHex: boundIdentity.secret_key_hex,
       createdAt: nextCreatedAt(),
     });
-    await this.#repository.publish(event);
+    await this.#repository.publishConfirmed(event);
     this.#clearDraftScope("join");
     this.#notice = { kind: "success", text: "You joined the demo day." };
   }
 
   async #publishOwnEntry(update: (content: ParticipantEntryV1) => ParticipantEntryV1): Promise<void> {
     const session = this.#currentSession();
-    const identity = loadIdentity();
-    if (!session || !identity) throw new Error("Session or identity is unavailable");
+    if (!session) throw new Error("Session is unavailable");
     if (session.state.closed_at_ms !== null) throw new Error("This demo day is closed");
-    const current = this.#repository.entryForParticipant(session.address, identity.public_key_hex);
+    const current = this.#entryForSignedInParticipant(session.address);
     if (!current) throw new Error("You have not joined this session");
+    const nextContent = update(current.content);
+    const identity = loadIdentity();
+    if (!identity) throw new Error("Legacy participant identity is unavailable");
     const profile = this.#repository.getProfile(identity.public_key_hex) ?? await this.#repository.ensureProfile(identity.public_key_hex);
     if (!profile) throw new Error("Copied profile is unavailable");
-    const nextContent = update(current.content);
     const event = await buildEntryEvent({
       sessionAddress: session.address,
       sessionD: session.d,
@@ -1934,6 +1972,26 @@ export class DemoDayApp {
       createdAt: nextCreatedAt(current.event.created_at),
     });
     await this.#repository.publish(event);
+  }
+
+  async #deleteOwnDemo(): Promise<void> {
+    const session = this.#currentSession();
+    if (!session || session.state.closed_at_ms !== null) throw new Error("This Demo Day is not open");
+    const entry = this.#entryForSignedInParticipant(session.address);
+    const identity = loadIdentity();
+    if (!entry || !identity || identity.public_key_hex !== entry.author) throw new Error("This browser does not control the selected demo entry");
+    if (session.state.current_demo_pubkey === entry.author || session.state.presented.some((run) => run.pubkey === entry.author)) {
+      throw new Error("A demo cannot be deleted after it starts presenting");
+    }
+    const deletion = await buildEntryDeletionEvent({
+      targetEvent: entry.event,
+      targetAddress: entry.address,
+      secretKeyHex: identity.secret_key_hex,
+      createdAt: nextCreatedAt(entry.event.created_at),
+    });
+    await this.#repository.publishConfirmed(deletion);
+    this.#clearDraftScope("edit-demo");
+    this.#notice = { kind: "success", title: "Demo deleted", text: "Your signed NIP-09 deletion was published and the project was removed from this Demo Day." };
   }
 
   async #mutateSession(update: (state: DemoDaySessionV1) => DemoDaySessionV1): Promise<void> {
@@ -2708,6 +2766,10 @@ export class DemoDayApp {
       if (demoAuthor) {
         this.#editingFeedback.add(demoAuthor);
         this.requestRender();
+      }
+    } else if (action === "delete-own-demo") {
+      if (globalThis.confirm("Delete your demo from this Demo Day? This publishes a signed NIP-09 deletion event.")) {
+        void this.#withBusy("Deleting your demo", () => this.#deleteOwnDemo());
       }
     } else if (action === "paste-profile-npub") {
       void this.#pasteProfileNpub();

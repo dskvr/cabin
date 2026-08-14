@@ -34,6 +34,7 @@ import {
 import { EventIndex } from "../dist/assets/nostr/event-index.js";
 import {
   buildEntryEvent,
+  buildEntryDeletionEvent,
   buildSessionEvent,
   buildWeekConfigurationEvent,
   copyProfileToEphemeralKey,
@@ -407,6 +408,19 @@ test("session and participant entry builders produce valid, parseable records", 
   assert.equal(getTag(entry, "a"), parsedSession.address);
   assert.equal(getTag(entry, "zap"), realPubkey);
   assert.equal(await verifyEvent(entry), true);
+
+  const deletion = await buildEntryDeletionEvent({
+    targetEvent: entry,
+    targetAddress: parsedEntry.address,
+    secretKeyHex: participantSecret,
+    createdAt: 102,
+  });
+  assert.equal(deletion.kind, 5);
+  assert.equal(getTag(deletion, "e"), entry.id);
+  assert.equal(getTag(deletion, "a"), parsedEntry.address);
+  assert.equal(getTag(deletion, "k"), String(APP_KIND));
+  assert.equal(deletion.pubkey, entry.pubkey);
+  assert.equal(await verifyEvent(deletion), true);
 });
 
 test("entry builder omits zap redirect when copied Lightning fields are blank", async () => {

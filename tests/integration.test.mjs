@@ -9,7 +9,7 @@ import { parseWeekConfiguration, removeActivity, removeProposalField, seedWeekCo
 import { npubEncode } from "../dist/assets/nostr/bech32.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
 import { buildExport } from "../dist/assets/domain/export.js";
-import { buildEntryEvent, buildPrivateProposalEvents, buildPrivateScheduleEvent, buildPublicScheduleEvent, buildSessionEvent, buildWeekArchiveEvent, buildWeekConfigurationEvent, copyProfileToEphemeralKey } from "../dist/assets/nostr/event-builders.js";
+import { buildEntryDeletionEvent, buildEntryEvent, buildPrivateProposalEvents, buildPrivateScheduleEvent, buildPublicScheduleEvent, buildSessionEvent, buildWeekArchiveEvent, buildWeekConfigurationEvent, copyProfileToEphemeralKey } from "../dist/assets/nostr/event-builders.js";
 import { parseParticipantEntryEvent, parsePrivateProposalGift, parseSessionEvent } from "../dist/assets/nostr/event-parsers.js";
 import { configurationForArchive, proposalIdFor, publicScheduleProjection } from "../dist/assets/domain/cabin.js";
 import { sessionTimerDurations } from "../dist/assets/domain/timer.js";
@@ -186,6 +186,50 @@ test("NIP-07 login uses the extension account for signed events", async () => {
     if (previousStorage) Object.defineProperty(globalThis, "localStorage", previousStorage);
     else delete globalThis.localStorage;
   }
+});
+
+test("a logged-in participant joins directly and existing submissions are detected", () => {
+  const appSource = readFileSync(new URL("../src/app/App.ts", import.meta.url), "utf8");
+  const renderSessionStart = appSource.indexOf("#renderSession(selected:");
+  const renderSession = appSource.slice(renderSessionStart, appSource.indexOf("#renderJoinForm(", renderSessionStart));
+  const joinStart = appSource.indexOf("async #joinSession(");
+  const joinSession = appSource.slice(joinStart, appSource.indexOf("async #publishOwnEntry(", joinStart));
+
+  assert.match(renderSession, /if \(!this\.#nip07Pubkey\).*Login to join Demo Day/);
+  assert.match(renderSession, /#entryForSignedInParticipant/);
+  assert.doesNotMatch(renderSession, /#renderProfileImport|#identityReady/, "a session never asks an authenticated participant to identify themselves again");
+  assert.match(joinSession, /findRealProfile/);
+  assert.match(joinSession, /importProfile/);
+  assert.match(joinSession, /attachImportedProfile/);
+  assert.match(joinSession, /buildEntryEvent\(/);
+  assert.doesNotMatch(joinSession, /#cabinSigner|signEvent/, "joining does not trigger a second NIP-07 signing request");
+  assert.match(joinSession, /already submitted a project/);
+});
+
+test("NIP-09 deletion immediately removes an owned demo and permits a later resubmission", async () => {
+  const repository = new NostrRepository(new InMemoryTestTransport());
+  const participantSecret = key(91);
+  const participantPubkey = getPublicKey(participantSecret);
+  const realSecret = key(92);
+  const realPubkey = getPublicKey(realSecret);
+  const captainPubkey = getPublicKey(key(93));
+  const address = `${APP_KIND}:${captainPubkey}:${sessionD}`;
+  const sourceProfile = await finalizeEvent({ kind: 0, created_at: 10, tags: [], content: '{"name":"Participant"}' }, realSecret);
+  const content = makeEntry({ realPubkey, sourceId: sourceProfile.id, name: "Delete me" });
+  const entry = await buildEntryEvent({ sessionAddress: address, sessionD, entry: content, profile: { name: "Participant" }, secretKeyHex: participantSecret, createdAt: 20 });
+  await repository.publish(entry);
+  assert.equal(repository.entriesForSession(address).length, 1);
+
+  const parsed = parseParticipantEntryEvent(entry, address);
+  assert.ok(parsed);
+  const deletion = await buildEntryDeletionEvent({ targetEvent: entry, targetAddress: parsed.address, secretKeyHex: participantSecret, createdAt: 21 });
+  await repository.publish(deletion);
+  assert.equal(repository.entriesForSession(address).length, 0, "the roster updates as soon as the signed deletion is ingested");
+
+  const resubmission = await buildEntryEvent({ sessionAddress: address, sessionD, entry: { ...content, demo: { ...content.demo, name: "Submitted again" }, updated_at_ms: content.updated_at_ms + 2 }, profile: { name: "Participant" }, secretKeyHex: participantSecret, createdAt: 22 });
+  assert.equal(resubmission.pubkey, participantPubkey);
+  await repository.publish(resubmission);
+  assert.equal(repository.entriesForSession(address)[0]?.content.demo.name, "Submitted again", "a newer entry is not hidden by an older deletion request");
 });
 
 test("manifest-assigned captain publishes and reads a complete week configuration", async () => {

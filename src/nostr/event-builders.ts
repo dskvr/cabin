@@ -1,4 +1,4 @@
-import { APP_KIND, DEFAULT_RELAYS, GIFT_WRAP_KIND, PRIVATE_PROPOSAL_KIND, PRIVATE_SCHEDULE_KIND, PROFILE_KIND, WEEK_ARCHIVE_KIND, ZAP_REQUEST_KIND } from "../config/relays.js";
+import { APP_KIND, DEFAULT_RELAYS, DELETION_KIND, GIFT_WRAP_KIND, PRIVATE_PROPOSAL_KIND, PRIVATE_SCHEDULE_KIND, PROFILE_KIND, WEEK_ARCHIVE_KIND, ZAP_REQUEST_KIND } from "../config/relays.js";
 import type { PrivateProposal, PrivateSchedule, PublicSchedule, WeekArchive } from "../domain/cabin.js";
 import { parsePrivateProposal, parsePrivateSchedule, parsePublicSchedule, parseWeekArchive, validateProposalForWeek } from "../domain/cabin.js";
 import type {
@@ -12,9 +12,9 @@ import type { ProvisionedWeek } from "../domain/cohort.js";
 import { weekD } from "../domain/cohort.js";
 import type { WeekConfigurationV1 } from "../domain/week.js";
 import { parseWeekConfiguration } from "../domain/week.js";
-import { cloneTags, entryD } from "../domain/utils.js";
+import { cloneTags, entryD, getTag } from "../domain/utils.js";
 import { encodeLnurl } from "./bech32.js";
-import { finalizeEvent, generateSecretKeyHex, nip44Encrypt } from "./crypto.js";
+import { finalizeEvent, generateSecretKeyHex, getPublicKey, nip44Encrypt } from "./crypto.js";
 import { localSigner, type EventSigner } from "./signer.js";
 
 async function giftWrap(inner: NostrEvent, recipientPubkey: string, createdAt: number): Promise<NostrEvent> {
@@ -202,6 +202,27 @@ export async function buildEntryEvent({
     },
     secretKeyHex,
   );
+}
+
+export async function buildEntryDeletionEvent({
+  targetEvent,
+  targetAddress,
+  secretKeyHex,
+  createdAt,
+}: {
+  targetEvent: NostrEvent;
+  targetAddress: string;
+  secretKeyHex: string;
+  createdAt: number;
+}): Promise<NostrEvent> {
+  if (targetEvent.kind !== APP_KIND || getPublicKey(secretKeyHex) !== targetEvent.pubkey) throw new Error("Only the demo author can delete this entry");
+  if (targetAddress !== `${APP_KIND}:${targetEvent.pubkey}:${getTag(targetEvent, "d") ?? ""}`) throw new Error("Invalid demo entry address");
+  return finalizeEvent({
+    kind: DELETION_KIND,
+    created_at: createdAt,
+    tags: [["e", targetEvent.id], ["a", targetAddress], ["k", String(APP_KIND)]],
+    content: "Participant removed their Demo Day submission.",
+  }, secretKeyHex);
 }
 
 export async function copyProfileToEphemeralKey({

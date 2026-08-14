@@ -1,6 +1,7 @@
 export const APP_KIND = 30078;
 export const PROFILE_KIND = 0;
 export const FOLLOW_LIST_KIND = 3;
+export const DELETION_KIND = 5;
 export const ZAP_REQUEST_KIND = 9734;
 export const ZAP_RECEIPT_KIND = 9735;
 export const PRIVATE_PROPOSAL_KIND = 30079;

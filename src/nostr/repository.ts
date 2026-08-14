@@ -1,5 +1,6 @@
 import {
   APP_KIND,
+  DELETION_KIND,
   DEFAULT_RELAYS,
   GIFT_WRAP_KIND,
   PENDING_PUBLISH_STORAGE_KEY,
@@ -28,6 +29,14 @@ import type { NostrTransport } from "./transport.js";
 interface PendingPublish {
   event: NostrEvent;
   addedAtMs: number;
+}
+
+function deletedByNip09(target: NostrEvent, targetAddress: string, events: readonly NostrEvent[]): boolean {
+  return events.some((event) => event.kind === DELETION_KIND
+    && event.pubkey === target.pubkey
+    && event.created_at >= target.created_at
+    && event.tags.some((tag) => tag[0] === "k" && tag[1] === String(target.kind))
+    && event.tags.some((tag) => (tag[0] === "e" && tag[1] === target.id) || (tag[0] === "a" && tag[1] === targetAddress)));
 }
 
 const MAX_RELAY_CONTENT_BYTES = 65_536;
@@ -119,6 +128,12 @@ export class NostrRepository {
         kinds: [APP_KIND],
         "#t": ["sedd-session"],
         limit: 200,
+      }, {
+        onevent: (item) => void this.ingest(item),
+      }),
+      this.#transport.subscribe(DEFAULT_RELAYS, {
+        kinds: [DELETION_KIND],
+        limit: 1_000,
       }, {
         onevent: (item) => void this.ingest(item),
       }),
@@ -400,9 +415,11 @@ export class NostrRepository {
   }
 
   entriesForSession(address: string): ParsedEntry[] {
+    const allEvents = this.#index.allEvents();
     return this.#index.values()
       .map((event) => parseParticipantEntryEvent(event, address))
       .filter((entry): entry is ParsedEntry => entry !== null)
+      .filter((entry) => !deletedByNip09(entry.event, entry.address, allEvents))
       .sort((a, b) => a.author.localeCompare(b.author));
   }
 
@@ -436,6 +453,13 @@ export class NostrRepository {
         limit: 500,
       }),
     ]);
+    const entries = this.entriesForSession(selected.address);
+    if (entries.length > 0) {
+      await Promise.all([
+        this.queryRaw(DEFAULT_RELAYS, { kinds: [DELETION_KIND], "#e": entries.map((entry) => entry.event.id), limit: entries.length * 4 }),
+        this.queryRaw(DEFAULT_RELAYS, { kinds: [DELETION_KIND], "#a": entries.map((entry) => entry.address), limit: entries.length * 4 }),
+      ]);
+    }
     const authors = dedupe([
       selected.captainPubkey,
       ...this.entriesForSession(selected.address).map((entry) => entry.author),
