@@ -34,13 +34,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. A new Demo Day uses six-minute presentation and two-minute question durations, and the captain can set a different per-week combination such as one minute plus two minutes.
   5. Only a valid Nostr-signed command from the designated captain changes captain-controlled week or form configuration; unsigned, forged, or non-captain commands are rejected even outside the interface.
 
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans executed
 Plans:
 
 - [x] 01-01-PLAN.md — Prove manifest assignment, deliberate signed publication, and verified repository read-back end to end
 - [x] 01-02-PLAN.md — Complete the activity, timing, proposal-form, and readiness editor
 - [x] 01-03-PLAN.md — Deliver the exact public preview and complete loading/error/responsive/accessibility UI states
-- [ ] 01-04-PLAN.md — Seal signed revision coordination and defense-in-depth Nostr authorization
+- [x] 01-04-PLAN.md — Seal signed revision coordination and defense-in-depth Nostr authorization
 
 **Execution order:** 01-01 → 01-02 → 01-03 → 01-04
 **UI hint:** yes
@@ -99,7 +99,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Secure Week Configuration | 3/4 | In Progress|  |
+| 1. Secure Week Configuration | 4/4 | In Progress|  |
 | 2. Private Participant Proposals | 0/TBD | Not started | - |
 | 3. Schedule Assembly & Publication | 0/TBD | Not started | - |
 | 4. Week Archive & Reuse | 0/TBD | Not started | - |
