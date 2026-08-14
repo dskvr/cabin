@@ -17,7 +17,7 @@ import {
 } from "../domain/utils.js";
 import { isAssignedCaptain } from "../domain/authorization.js";
 import { weekAddress, weekD, type ProvisionedWeek } from "../domain/cohort.js";
-import { parseWeekConfiguration, type WeekConfigurationV1 } from "../domain/week.js";
+import { MAX_WEEK_CONFIGURATION_CONTENT_LENGTH, parseWeekConfiguration, type WeekConfigurationV1 } from "../domain/week.js";
 
 export interface ParsedWeekConfiguration {
   event: NostrEvent;
@@ -30,6 +30,7 @@ export function parseWeekConfigurationEvent(event: NostrEvent, slot: Provisioned
   if (event.kind !== APP_KIND || !isAssignedCaptain(slot, event.pubkey) || !hasTag(event, "t", "captains-cabin-week")) return null;
   const d = getTag(event, "d");
   if (d !== weekD(slot)) return null;
+  if (event.content.length > MAX_WEEK_CONFIGURATION_CONTENT_LENGTH) return null;
   const configuration = parseWeekConfiguration(safeJson(event.content));
   if (!configuration || configuration.cohort_id !== slot.cohort_id || configuration.week_number !== slot.week_number) return null;
   return { event, configuration, d, address: weekAddress(slot) };

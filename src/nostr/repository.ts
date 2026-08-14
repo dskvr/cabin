@@ -213,10 +213,11 @@ export class NostrRepository {
     return event ? parseWeekConfigurationEvent(event, slot) : null;
   }
 
-  async refreshWeek(slot: ProvisionedWeek): Promise<void> {
+  async refreshWeek(slot: ProvisionedWeek): Promise<ParsedWeekConfiguration | null> {
     await this.queryRaw(DEFAULT_RELAYS, {
       kinds: [APP_KIND], authors: [slot.captain_pubkey], "#d": [weekD(slot)], limit: 20,
     });
+    return this.getWeek(slot);
   }
 
   subscribeWeek(slot: ProvisionedWeek): () => void {

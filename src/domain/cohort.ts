@@ -53,13 +53,13 @@ export function parseCohortManifest(value: unknown): CohortManifestV1 | null {
   if (!isRecord(value) || value.v !== 1 || typeof value.cohort_id !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(value.cohort_id)) return null;
   if (!calendarDate(value.start_date) || !calendarDate(value.end_date) || dateAt(value.end_date) < dateAt(value.start_date)) return null;
   const startingWeek = value.starting_week === undefined ? 1 : value.starting_week;
-  if (!Number.isInteger(startingWeek) || startingWeek < 1 || !Array.isArray(value.captains) || !Array.isArray(value.participant_allowlist)) return null;
+  if (typeof startingWeek !== "number" || !Number.isInteger(startingWeek) || startingWeek < 1 || !Array.isArray(value.captains) || !Array.isArray(value.participant_allowlist)) return null;
   if (value.captains.length > MAX_PEOPLE || value.participant_allowlist.length > MAX_PEOPLE) return null;
   const captainWeeks = new Set<number>();
   const captainPubkeys = new Set<string>();
   const captains: Array<{ week_number: number; pubkey: string }> = [];
   for (const item of value.captains) {
-    if (!isRecord(item) || !Number.isInteger(item.week_number) || item.week_number < startingWeek) return null;
+    if (!isRecord(item) || typeof item.week_number !== "number" || !Number.isInteger(item.week_number) || item.week_number < startingWeek) return null;
     const pubkey = parseNpub(item.npub);
     if (!pubkey || captainWeeks.has(item.week_number) || captainPubkeys.has(pubkey)) return null;
     captainWeeks.add(item.week_number);
@@ -84,14 +84,14 @@ export function weekAddress(slot: Pick<ProvisionedWeek, "captain_pubkey" | "coho
 }
 
 export function deriveProvisionedWeeks(manifest: CohortManifestV1): ProvisionedWeek[] {
-  return manifest.captains.map((captain) => {
+  return manifest.captains.map<ProvisionedWeek>((captain) => {
     const offset = (captain.week_number - 1) * 7;
     return {
       cohort_id: manifest.cohort_id,
       week_number: captain.week_number,
       start_date: dateAfter(manifest.start_date, offset),
       end_date: dateAfter(manifest.start_date, offset + 6),
-      timezone: "Atlantic/Madeira",
+      timezone: "Atlantic/Madeira" as const,
       captain_pubkey: captain.pubkey,
       participant_allowlist: manifest.participant_allowlist,
     };

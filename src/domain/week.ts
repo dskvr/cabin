@@ -4,6 +4,11 @@ import { isRecord, isValidEventId } from "./utils.js";
 const MAX_ACTIVITIES = 64;
 const MAX_PROPOSAL_FIELDS = 32;
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+export const MAX_WEEK_CONFIGURATION_CONTENT_LENGTH = 32_768;
+const CONFIGURATION_KEYS = new Set([
+  "v", "type", "cohort_id", "week_number", "timezone", "status", "intake_open", "theme",
+  "public_description", "activities", "proposal_fields", "presentation_minutes", "question_minutes", "base_event_id",
+]);
 
 export interface WeekActivityV1 {
   id: string;
@@ -41,12 +46,23 @@ function text(value: unknown, min: number, max: number): value is string {
 
 function time(value: unknown): value is string { return typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value); }
 
+function calendarDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year = Number.NaN, month = Number.NaN, day = Number.NaN] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function identifier(value: unknown): value is string {
+  return typeof value === "string" && ID.test(value);
+}
+
 function activity(value: unknown): value is WeekActivityV1 {
-  return isRecord(value) && ID.test(String(value.id)) && (value.day === "tuesday" || value.day === "wednesday") && text(value.name, 1, 160) && /^\d{4}-\d{2}-\d{2}$/.test(String(value.date)) && time(value.starts_at) && time(value.ends_at) && text(value.location, 1, 240) && (value.link === null || text(value.link, 1, 2048));
+  return isRecord(value) && identifier(value.id) && (value.day === "tuesday" || value.day === "wednesday") && text(value.name, 1, 160) && calendarDate(value.date) && time(value.starts_at) && time(value.ends_at) && text(value.location, 1, 240) && (value.link === null || text(value.link, 1, 2048));
 }
 
 function proposalField(value: unknown): value is ProposalFieldV1 {
-  return isRecord(value) && ID.test(String(value.id)) && text(value.label, 1, 160) && typeof value.required === "boolean";
+  return isRecord(value) && identifier(value.id) && text(value.label, 1, 160) && typeof value.required === "boolean";
 }
 
 export function seedWeekConfiguration(slot: ProvisionedWeek, edits: Pick<WeekConfigurationV1, "theme" | "public_description"> = { theme: "", public_description: "" }): WeekConfigurationV1 {
@@ -66,12 +82,12 @@ export function seedWeekConfiguration(slot: ProvisionedWeek, edits: Pick<WeekCon
 }
 
 export function parseWeekConfiguration(value: unknown): WeekConfigurationV1 | null {
-  if (!isRecord(value) || value.v !== 1 || value.type !== "week-configuration" || typeof value.cohort_id !== "string" || !ID.test(value.cohort_id) || !Number.isInteger(value.week_number) || value.week_number < 1) return null;
+  if (!isRecord(value) || Object.keys(value).some((key) => !CONFIGURATION_KEYS.has(key)) || value.v !== 1 || value.type !== "week-configuration" || !identifier(value.cohort_id) || typeof value.week_number !== "number" || !Number.isInteger(value.week_number) || value.week_number < 1) return null;
   if (value.timezone !== "Atlantic/Madeira" || value.status !== "setup" || value.intake_open !== false || !text(value.theme, 1, 120) || !text(value.public_description, 1, 4000)) return null;
   if (!Array.isArray(value.activities) || value.activities.length === 0 || value.activities.length > MAX_ACTIVITIES || !value.activities.every(activity)) return null;
   if (!Array.isArray(value.proposal_fields) || value.proposal_fields.length === 0 || value.proposal_fields.length > MAX_PROPOSAL_FIELDS || !value.proposal_fields.every(proposalField)) return null;
   if (new Set(value.activities.map((item) => item.id)).size !== value.activities.length || new Set(value.proposal_fields.map((item) => item.id)).size !== value.proposal_fields.length) return null;
-  if (!Number.isInteger(value.presentation_minutes) || value.presentation_minutes < 1 || value.presentation_minutes > 60 || !Number.isInteger(value.question_minutes) || value.question_minutes < 1 || value.question_minutes > 60) return null;
+  if (typeof value.presentation_minutes !== "number" || !Number.isInteger(value.presentation_minutes) || value.presentation_minutes < 1 || value.presentation_minutes > 60 || typeof value.question_minutes !== "number" || !Number.isInteger(value.question_minutes) || value.question_minutes < 1 || value.question_minutes > 60) return null;
   if (!(value.base_event_id === null || isValidEventId(value.base_event_id))) return null;
   return value as unknown as WeekConfigurationV1;
 }

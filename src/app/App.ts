@@ -222,6 +222,7 @@ export class DemoDayApp {
   #profileSearchTimer: number | null = null;
   #profileSearchSequence = 0;
   #drafts = new Map<string, string>();
+  #weekDraftBaseEvents = new Map<string, string | null>();
   #requestedProfiles = new Set<string>();
   #sessionUnsubscribe: (() => void) | null = null;
   #zapUnsubscribe: (() => void) | null = null;
@@ -455,6 +456,7 @@ export class DemoDayApp {
     const persisted = this.#repository.getWeek(slot);
     const seed = persisted?.configuration ?? seedWeekConfiguration(slot, { theme: "Week ${slot.week_number}", public_description: "" });
     const scope = `week-${slot.week_number}`;
+    if (!this.#weekDraftBaseEvents.has(scope)) this.#weekDraftBaseEvents.set(scope, persisted?.event.id ?? null);
     const theme = this.#draft(scope, "theme", seed.theme);
     const description = this.#draft(scope, "public_description", seed.public_description);
     return `<section class="narrow-page"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>${persisted ? "Update week configuration" : "Configure your week"}</h1>
@@ -975,6 +977,7 @@ export class DemoDayApp {
     for (const key of [...this.#drafts.keys()]) {
       if (key.startsWith(`${scope}:`)) this.#drafts.delete(key);
     }
+    this.#weekDraftBaseEvents.delete(scope);
   }
 
   #currentSelected(): SelectedSession | null {
@@ -1891,10 +1894,9 @@ export class DemoDayApp {
     const slot = weekForCaptain(manifest, identity.public_key_hex);
     if (!slot) throw new Error("This identity is not assigned a week to configure.");
     const scope = `week-${slot.week_number}`;
-    const loaded = this.#repository.getWeek(slot);
-    await this.#repository.refreshWeek(slot);
-    const latest = this.#repository.getWeek(slot);
-    if ((loaded?.event.id ?? null) !== (latest?.event.id ?? null)) {
+    const baseEventId = this.#weekDraftBaseEvents.get(scope) ?? this.#repository.getWeek(slot)?.event.id ?? null;
+    const latest = await this.#repository.refreshWeek(slot);
+    if (baseEventId !== (latest?.event.id ?? null)) {
       throw new Error("This week changed elsewhere. Reload and reapply your draft before publishing.");
     }
     const configuration = {
@@ -1909,8 +1911,7 @@ export class DemoDayApp {
       slot, configuration: valid, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(latest?.event.created_at),
     });
     await this.#repository.publish(event);
-    await this.#repository.refreshWeek(slot);
-    if (!this.#repository.getWeek(slot)) throw new Error("The signed week configuration was not read back from the repository.");
+    if (!(await this.#repository.refreshWeek(slot))) throw new Error("The signed week configuration was not read back from the repository.");
     this.#clearDraftScope(scope);
     this.#notice = { kind: "success", text: "Week published. Intake remains closed." };
   }
@@ -1985,6 +1986,7 @@ export class DemoDayApp {
         this.#profileCandidate = null;
         this.#profileLookupFailed = false;
         this.#drafts.clear();
+        this.#weekDraftBaseEvents.clear();
         this.#notice = { kind: "info", text: "Local identity reset." };
         this.requestRender();
       }
