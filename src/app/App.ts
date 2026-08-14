@@ -700,7 +700,7 @@ export class DemoDayApp {
       content = activityCards || `<section class="panel day-detail-panel"><span class="eyebrow">Preparation day</span><h2>Prepare for Demo Day</h2><p>No public cohort activity is scheduled. Friday uses ${configuration?.presentation_minutes ?? PRESENTATION_MS / 60_000}-minute demos with ${configuration?.question_minutes ?? QUESTIONS_MS / 60_000} minutes for questions.</p></section>`;
     } else {
       const sessions = this.#sessionsForWeek(slot);
-      const canCreate = this.#nip07Pubkey === slot.captain_pubkey && Boolean(configuration);
+      const canCreate = this.#nip07Pubkey === slot.captain_pubkey && Boolean(configuration) && sessions.length === 0;
       content = `${activityCards}<section class="friday-hero"><div><span class="eyebrow">Demo Day</span><h2>${escapeHtml(configuration?.theme ?? `Week ${slot.week_number}`)}</h2><p>${configuration?.presentation_minutes ?? PRESENTATION_MS / 60_000} minutes presenting · ${configuration?.question_minutes ?? QUESTIONS_MS / 60_000} minutes for questions</p></div>${canCreate ? `<a class="button button-primary button-large" href="#/create">Create Demo Day</a>` : ""}</section><section class="card-grid friday-session-grid">${sessions.map((session) => this.#renderDemoSessionCard(session)).join("") || `<div class="empty-state compact"><h3>No Demo Day session yet</h3><p>The existing Demo Day room will appear here once the captain creates it.</p></div>`}</section>`;
     }
     return `<section class="day-page"><a class="back-link" href="#/">← Week ${slot.week_number}</a><header class="day-page-header"><span class="eyebrow">${escapeHtml(displayDate(date))} · Atlantic/Madeira</span><h1>${WEEK_DAY_LABELS[day]}</h1></header><nav class="week-day-tabs" aria-label="Week days">${navigation}</nav><div class="day-page-content">${content}</div></section>`;
@@ -770,7 +770,7 @@ export class DemoDayApp {
       const cards = activities.map((activity, index) => {
         const expanded = this.#weekExpanded.has(activity.id) || errors.length > 0;
         const summary = activityDetails(activity);
-        return `<article class="week-editor-card" data-week-card="${escapeAttr(activity.id)}"><header><button class="card-toggle" data-action="toggle-week-card" data-card-id="${escapeAttr(activity.id)}" aria-expanded="${expanded}">${index + 1}. ${escapeHtml(activity.name || "Untitled activity")}${summary.length ? ` · ${escapeHtml(summary.join(" · "))}` : ""}</button></header>
+        return `<article class="week-editor-card" data-week-card="${escapeAttr(activity.id)}"><header><button class="card-toggle" type="button" data-action="toggle-week-card" data-card-id="${escapeAttr(activity.id)}" aria-expanded="${expanded}">${index + 1}. ${escapeHtml(activity.name || "Untitled activity")}${summary.length ? ` · ${escapeHtml(summary.join(" · "))}` : ""}</button></header>
           ${expanded ? `<div class="form-stack card-body">
             <label class="field"><span>Title *</span><input data-week-field="activity:name" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.name)}" maxlength="160" required /></label>
             <label class="field"><span>Description — optional</span><textarea data-week-field="activity:description" data-week-id="${escapeAttr(activity.id)}" maxlength="1000" rows="3">${escapeHtml(activity.description ?? "")}</textarea></label>
@@ -779,32 +779,36 @@ export class DemoDayApp {
             <label class="field"><span>Location — optional</span><input data-week-field="activity:location" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.location)}" maxlength="240" /></label>
             <label class="field"><span>Link — optional</span><input type="url" data-week-field="activity:link" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.link ?? "")}" /><small>Any supplied times use Atlantic/Madeira.</small></label>
           </div>` : ""}
-          <div class="card-actions"><button class="button button-secondary" data-action="move-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}" data-direction="-1" ${index === 0 ? "disabled" : ""}>Move earlier</button><button class="button button-secondary" data-action="move-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}" data-direction="1" ${index === activities.length - 1 ? "disabled" : ""}>Move later</button><button class="button button-danger" data-action="request-remove-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}">Remove activity</button></div></article>`;
+          <div class="card-actions"><button class="button button-secondary" type="button" data-action="move-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}" data-direction="-1" ${index === 0 ? "disabled" : ""}>Move earlier</button><button class="button button-secondary" type="button" data-action="move-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}" data-direction="1" ${index === activities.length - 1 ? "disabled" : ""}>Move later</button><button class="button button-danger" type="button" data-action="request-remove-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}">Remove activity</button></div></article>`;
       }).join("");
-      return `<section class="week-subsection"><h3>${heading}</h3>${cards || `<div class="empty-state compact"><h4>No activities scheduled</h4><p>Add one if this day has a cohort activity.</p></div>`}<button class="button button-secondary" data-action="add-week-activity" data-week-scope="${escapeAttr(scope)}" data-day="${day}">Add activity</button></section>`;
+      return `<section class="week-subsection"><h3>${heading}</h3>${cards || `<div class="empty-state compact"><h4>No activities scheduled</h4><p>Add one if this day has a cohort activity.</p></div>`}<button class="button button-secondary" type="button" data-action="add-week-activity" data-week-scope="${escapeAttr(scope)}" data-day="${day}">Add activity</button></section>`;
     };
     const fields = draft.proposal_fields.map((proposalField, index) => {
       const expanded = this.#weekExpanded.has(proposalField.id) || readiness.sections.proposal_form.length > 0;
-      return `<article class="week-editor-card"><header><button class="card-toggle" data-action="toggle-week-card" data-card-id="${escapeAttr(proposalField.id)}" aria-expanded="${expanded}">${index + 1}. ${escapeHtml(proposalField.label || "Untitled field")}${proposalField.required ? " *" : ""}</button></header>${expanded ? `<div class="form-stack card-body"><label class="field"><span>Field label *</span><input data-week-field="field:label" data-week-id="${escapeAttr(proposalField.id)}" value="${escapeAttr(proposalField.label)}" maxlength="160" /></label><label class="field checkbox-field"><input type="checkbox" data-week-field="field:required" data-week-id="${escapeAttr(proposalField.id)}" ${proposalField.required ? "checked" : ""} /> <span>Required for proposals</span></label></div>` : ""}<div class="card-actions"><button class="button button-secondary" data-action="move-week-field" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(proposalField.id)}" data-direction="-1" ${index === 0 ? "disabled" : ""}>Move earlier</button><button class="button button-secondary" data-action="move-week-field" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(proposalField.id)}" data-direction="1" ${index === draft.proposal_fields.length - 1 ? "disabled" : ""}>Move later</button><button class="button button-danger" data-action="request-remove-week-field" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(proposalField.id)}">Remove field</button></div></article>`;
+      return `<article class="week-editor-card"><header><button class="card-toggle" type="button" data-action="toggle-week-card" data-card-id="${escapeAttr(proposalField.id)}" aria-expanded="${expanded}">${index + 1}. ${escapeHtml(proposalField.label || "Untitled field")}${proposalField.required ? " *" : ""}</button></header>${expanded ? `<div class="form-stack card-body"><label class="field"><span>Field label *</span><input data-week-field="field:label" data-week-id="${escapeAttr(proposalField.id)}" value="${escapeAttr(proposalField.label)}" maxlength="160" /></label><label class="field checkbox-field"><input type="checkbox" data-week-field="field:required" data-week-id="${escapeAttr(proposalField.id)}" ${proposalField.required ? "checked" : ""} /> <span>Required for proposals</span></label></div>` : ""}<div class="card-actions"><button class="button button-secondary" type="button" data-action="move-week-field" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(proposalField.id)}" data-direction="-1" ${index === 0 ? "disabled" : ""}>Move earlier</button><button class="button button-secondary" type="button" data-action="move-week-field" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(proposalField.id)}" data-direction="1" ${index === draft.proposal_fields.length - 1 ? "disabled" : ""}>Move later</button><button class="button button-danger" type="button" data-action="request-remove-week-field" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(proposalField.id)}">Remove field</button></div></article>`;
     }).join("");
     const confirmation = this.#weekRemoval && this.#weekRemoval.scope === scope ? (() => {
       const item = this.#weekRemoval.kind === "activity" ? draft.activities.find((entry) => entry.id === this.#weekRemoval?.id) : draft.proposal_fields.find((entry) => entry.id === this.#weekRemoval?.id);
       const title = item ? ("name" in item ? item.name : item.label) : "this item";
       const removeLabel = this.#weekRemoval.kind === "activity" ? "Remove activity" : "Remove field";
-      return `<section class="panel destructive-confirmation" role="dialog" aria-modal="true"><h2>Remove from draft?</h2><p>Remove “${escapeHtml(title)}” from this unpublished draft?</p><div class="form-actions"><button class="button button-secondary" data-action="cancel-week-removal">Cancel</button><button class="button button-danger" data-action="confirm-week-removal">${removeLabel}</button></div></section>`;
+      return `<section class="panel destructive-confirmation" role="dialog" aria-modal="true"><h2>Remove from draft?</h2><p>Remove “${escapeHtml(title)}” from this unpublished draft?</p><div class="form-actions"><button class="button button-secondary" type="button" data-action="cancel-week-removal">Cancel</button><button class="button button-danger" type="button" data-action="confirm-week-removal">${removeLabel}</button></div></section>`;
     })() : "";
     const readinessItems = [["Week details", "week_details"], ["Activities", "activities"], ["Proposal form", "proposal_form"], ["Demo Day timing", "demo_day_timing"]] as const;
     const cabinSchedule = persisted ? this.#privateSchedules.get(`cabin-${slot.week_number}`) : null;
-    const captainActionDock = `<aside class="captain-action-dock" aria-label="Captain actions"><span class="eyebrow">Captain actions</span><button class="button button-secondary" type="button" data-action="preview-week" data-week-scope="${escapeAttr(scope)}">Preview week</button><button class="button button-primary" type="submit" form="week-configuration-form" ${readiness.valid ? "" : "disabled"}>${persisted ? "Publish changes" : "Create week"}</button>${persisted ? `<span class="captain-action-divider"></span><button class="button button-secondary" type="button" data-action="toggle-cabin-intake">${persisted.configuration.intake_open ? "Close intake" : "Open intake"}</button><button class="button button-secondary" type="button" data-action="refresh-cabin-data">Refresh inbox</button><button class="button button-secondary" type="button" data-action="save-cabin-schedule">Save private schedule</button><button class="button button-primary" type="button" data-action="publish-cabin-schedule" ${cabinSchedule?.inner ? "" : "disabled"}>Publish public schedule</button><button class="button button-danger" type="button" data-action="archive-cabin-week">Complete and archive week</button>` : ""}</aside>`;
+    const unpublishedWeekChanges = persisted
+      ? JSON.stringify({ ...draft, base_event_id: null }) !== JSON.stringify({ ...persisted.configuration, base_event_id: null })
+      : true;
+    const downstreamDisabled = unpublishedWeekChanges ? 'disabled title="Publish the week changes first"' : "";
+    const captainActionDock = `<aside class="captain-action-dock" aria-label="Captain actions"><span class="eyebrow">Captain actions</span>${persisted && unpublishedWeekChanges ? `<p class="captain-action-warning">Week changes are still local. Publish them before schedule actions.</p>` : ""}<button class="button button-secondary" type="button" data-action="preview-week" data-week-scope="${escapeAttr(scope)}">Preview week</button><button class="button button-primary" type="submit" form="week-configuration-form" ${readiness.valid && unpublishedWeekChanges ? "" : "disabled"}>${persisted ? unpublishedWeekChanges ? "Publish week changes" : "Week is published" : "Create week"}</button>${persisted ? `<span class="captain-action-divider"></span><button class="button button-secondary" type="button" data-action="toggle-cabin-intake" ${downstreamDisabled}>${persisted.configuration.intake_open ? "Close intake" : "Open intake"}</button><button class="button button-secondary" type="button" data-action="refresh-cabin-data" ${downstreamDisabled}>Refresh inbox</button><button class="button button-secondary" type="button" data-action="save-cabin-schedule" ${downstreamDisabled}>Save private schedule</button><button class="button button-primary" type="button" data-action="publish-cabin-schedule" ${cabinSchedule?.inner && !unpublishedWeekChanges ? "" : 'disabled title="Save the current private schedule after publishing week changes"'}>Publish public schedule</button><button class="button button-danger" type="button" data-action="archive-cabin-week" ${downstreamDisabled}>Complete and archive week</button>` : ""}</aside>`;
     if (persisted) void this.#loadCabinData(slot, persisted.event.id, persisted.configuration, this.#cabinSigner());
     return `<section class="narrow-page week-workspace"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>Week ${slot.week_number}</h1><p>${escapeHtml(slot.start_date)} – ${escapeHtml(slot.end_date)} · Atlantic/Madeira</p><p>Assigned captain: ${escapeHtml(captain.name)}</p>
       ${confirmation}
       ${captainActionDock}
       <form id="week-configuration-form" class="panel form-stack" data-form-action="publish-week" data-draft-scope="${escapeAttr(scope)}"><h2>Week details</h2><label class="field"><span>Theme *</span><input id="week-theme" name="theme" data-week-field="config:theme" value="${escapeAttr(draft.theme)}" maxlength="120" aria-describedby="week-theme-error" ${readiness.sections.week_details.length ? 'aria-invalid="true"' : ""} /></label>${readiness.sections.week_details.length ? `<small id="week-theme-error" class="field-error">${escapeHtml(readiness.sections.week_details[0] ?? "")}</small>` : ""}<label class="field"><span>Public description *</span><textarea id="week-public-description" name="public_description" data-week-field="config:public_description" maxlength="4000" rows="4" aria-describedby="week-public-description-help">${escapeHtml(draft.public_description)}</textarea><small id="week-public-description-help">Visible in the public week preview.</small></label>
       <section class="week-subsection"><h2>Activities</h2>${group("monday", "Monday")}${group("tuesday", "Tuesday talks")}${group("wednesday", "Wednesday workshops")}${group("thursday", "Thursday")}${group("friday", "Friday")}</section>
-      <section class="week-subsection"><h2>Proposal form</h2>${fields || `<div class="empty-state compact"><h3>No proposal fields yet</h3><p>Add a field before publishing this week.</p></div>`}<button class="button button-secondary" data-action="add-week-field" data-week-scope="${escapeAttr(scope)}">Add field</button></section>
+      <section class="week-subsection"><h2>Proposal form</h2>${fields || `<div class="empty-state compact"><h3>No proposal fields yet</h3><p>Add a field before publishing this week.</p></div>`}<button class="button button-secondary" type="button" data-action="add-week-field" data-week-scope="${escapeAttr(scope)}">Add field</button></section>
       <section class="week-subsection"><h2>Demo Day timing</h2><label class="field"><span>Presentation duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:presentation_minutes" value="${draft.presentation_minutes}" /></label><label class="field"><span>Question duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:question_minutes" value="${draft.question_minutes}" /></label><p>Demo Day timing: ${draft.presentation_minutes}:00 presentation + ${draft.question_minutes}:00 questions.</p></section>
-      <section class="panel readiness-panel"><h2>Readiness</h2>${readinessItems.map(([label, key]) => readiness.sections[key].length ? `<button class="readiness-action needs-attention" data-action="focus-week-invalid" data-week-scope="${escapeAttr(scope)}" data-week-section="${key}"><strong>${escapeHtml(label)}:</strong> Needs attention</button>` : `<p class="ready"><strong>${escapeHtml(label)}:</strong> Ready</p>`).join("")} ${readiness.valid ? "" : "<p>This section needs attention. Complete the highlighted fields to publish this week.</p>"}</section></form>
+      <section class="panel readiness-panel"><h2>Readiness</h2>${readinessItems.map(([label, key]) => readiness.sections[key].length ? `<button class="readiness-action needs-attention" type="button" data-action="focus-week-invalid" data-week-scope="${escapeAttr(scope)}" data-week-section="${key}"><strong>${escapeHtml(label)}:</strong> Needs attention</button>` : `<p class="ready"><strong>${escapeHtml(label)}:</strong> Ready</p>`).join("")} ${readiness.valid ? "" : "<p>This section needs attention. Complete the highlighted fields to publish this week.</p>"}</section></form>
       ${persisted ? this.#renderCaptainCabin(slot, persisted.event.id, persisted.configuration) : ""}
     </section>`;
   }
@@ -852,15 +856,17 @@ export class DemoDayApp {
   }
 
   #renderCreate(): string {
-    const identity = getOrCreateIdentity();
-    if (!this.#identityReady(identity)) {
-      return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><h1>Who are you?</h1>${this.#renderProfileImport(identity)}</section>`;
-    }
-    const profile = this.#profile(identity.public_key_hex);
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    if (!this.#nip07Pubkey) return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><section class="panel"><h1>Login to create Demo Day</h1><p>Use the NIP-07 login in the header. The assigned captain’s account authorizes this action.</p></section></section>`;
+    const slot = manifest ? weekForCaptain(manifest, this.#nip07Pubkey) : null;
+    if (!slot) return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><section class="panel"><h1>Captain access required</h1><p>This NIP-07 account is not assigned to a cohort week.</p></section></section>`;
+    const existing = this.#sessionsForWeek(slot)[0];
+    if (existing) return `<section class="narrow-page"><a class="back-link" href="#/week/${slot.week_number}/friday">← Friday</a><section class="panel"><span class="eyebrow">Demo Day already exists</span><h1>${escapeHtml(existing.state.name)}</h1><p>Week ${slot.week_number} already has a Demo Day room.</p><a class="button button-primary" href="#/session/${escapeAttr(sessionNaddr(existing.event.pubkey, existing.d))}">Open Demo Day</a></section></section>`;
+    const profile = this.#profile(this.#nip07Pubkey);
     return `<section class="narrow-page">
       <a class="back-link" href="#/">← Active demo days</a>
       <span class="eyebrow">Create session</span><h1>Create a new demo day</h1>
-      ${profileComponent({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name, className: "profile-confirm" })}
+      ${profileComponent({ picture: profile.picture, pubkey: this.#nip07Pubkey, name: profile.name, className: "profile-confirm" })}
       <form class="panel form-stack" data-form-action="create-session" data-draft-scope="create">
         ${field({ label: "Demo-day name", name: "session_name", value: this.#draft("create", "session_name"), placeholder: "SEC-08 — Week 3 Demo Day", required: true, maxlength: 140 })}
         <p>This creates the room only. Participants—including the captain, if presenting—add their demos after joining.</p>
@@ -926,13 +932,14 @@ export class DemoDayApp {
     if (session.state.closed_at_ms !== null) return this.#renderClosedSummary(session);
 
     const identity = getOrCreateIdentity();
-    const ownEntry = this.#repository.entryForParticipant(session.address, identity.public_key_hex);
+    const ownEntry = this.#repository.entryForParticipant(session.address, identity.public_key_hex)
+      ?? (this.#nip07Pubkey ? entries.find((entry) => entry.author === this.#nip07Pubkey || entry.content.real_pubkey === this.#nip07Pubkey) ?? null : null);
+    if (!ownEntry && session.event.pubkey === identity.public_key_hex && this.#nip07Pubkey) return this.#renderCaptainSessionWithoutEntry(session, entries);
+    if (ownEntry) return this.#renderParticipantSession(session, entries, ownEntry, this.#nip07Pubkey ?? identity.public_key_hex);
     if (!this.#identityReady(identity)) {
       return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><h1>Who are you?</h1>${this.#renderProfileImport(identity)}</section>`;
     }
-    if (!ownEntry && identity.public_key_hex === session.event.pubkey) return this.#renderCaptainSessionWithoutEntry(session, entries);
-    if (!ownEntry) return this.#renderJoinForm(session, identity);
-    return this.#renderParticipantSession(session, entries, ownEntry, identity);
+    return this.#renderJoinForm(session, identity);
   }
 
   #renderJoinForm(session: ParsedSession, identity: LocalIdentityV1): string {
@@ -996,10 +1003,10 @@ export class DemoDayApp {
     session: ParsedSession,
     entries: ParsedEntry[],
     ownEntry: ParsedEntry,
-    identity: LocalIdentityV1,
+    identityPubkey: string,
   ): string {
     const captain = this.#profile(session.event.pubkey);
-    const isCaptain = identity.public_key_hex === session.event.pubkey;
+    const isCaptain = identityPubkey === session.event.pubkey;
     const completed = session.state.presented.map((run) => run.pubkey);
     const current = session.state.current_demo_pubkey
       ? entries.find((entry) => entry.author === session.state.current_demo_pubkey) ?? null
@@ -1835,11 +1842,11 @@ export class DemoDayApp {
   }
 
   async #createSession(formData: FormData): Promise<void> {
-    const identity = loadIdentity();
-    if (!identity || !this.#identityReady(identity)) throw new Error("Complete profile import first");
+    const identity = getOrCreateIdentity();
     const manifest = parseCohortManifest(COHORT_MANIFEST);
     const slot = manifest && this.#nip07Pubkey ? weekForCaptain(manifest, this.#nip07Pubkey) : null;
     if (!slot) throw new Error("This identity is not assigned a week to configure.");
+    if (this.#sessionsForWeek(slot).length > 0) throw new Error("This week already has a Demo Day room.");
     const week = await this.#repository.refreshWeek(slot);
     if (!week) throw new Error("Publish this week's configuration before creating a demo day.");
     const name = clampText(String(formData.get("session_name") ?? ""), 140);

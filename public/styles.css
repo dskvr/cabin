@@ -2655,6 +2655,16 @@ footer a:hover {
 }
 .captain-action-dock > .eyebrow,
 .captain-action-divider { grid-column: 1 / -1; }
+.captain-action-warning {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 210, 77, .55);
+  color: var(--yellow);
+  background: rgba(255, 210, 77, .08);
+  font-size: .84rem;
+  line-height: 1.4;
+}
 .captain-action-dock .button { width: 100%; min-width: 0; }
 .captain-action-divider { height: 1px; margin-block: 4px; background: var(--line); }
 @media (min-width: 1320px) {

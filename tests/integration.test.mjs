@@ -133,10 +133,13 @@ test("Demo Day creation creates only the room and keeps captain participation op
   const createAction = appSource.slice(createActionStart, appSource.indexOf("async #joinSession(", createActionStart));
 
   assert.match(createView, /This creates the room only/);
+  assert.match(createView, /Login to create Demo Day/);
+  assert.match(createView, /Demo Day already exists/);
   assert.doesNotMatch(createView, /name: "demo_name"|name: "demo_description"|name: "demo_link"/);
   assert.doesNotMatch(createAction, /buildEntryEvent|entryContent|#formDemo/);
   assert.match(appSource, /#renderCaptainSessionWithoutEntry/);
   assert.match(appSource, /Join as a presenter/);
+  assert.match(appSource, /sessions\.length === 0/, "create is hidden once the week has a Demo Day room");
 });
 
 test("NIP-07 login uses the extension account for signed events", async () => {
@@ -634,12 +637,15 @@ test("week workspace ships every loading, error, retry, accessibility, and respo
   assert.match(css, /:focus-visible/);
   assert.match(css, /min-height: 44px/);
   assert.match(app, /!persisted && !captainSlot/, "a participant waits for the captain's first publication");
-  assert.match(app, /persisted \? "Publish changes" : "Create week"/, "an assigned captain can create the first week event");
+  assert.match(app, /"Publish week changes"[\s\S]*"Create week"/, "an assigned captain can publish local week changes or create the first week event");
   assert.match(app, /class="captain-action-dock" aria-label="Captain actions"/);
   assert.match(app, /form="week-configuration-form"/, "the floating publish action submits the complete week form");
   assert.match(css, /@media \(min-width: 1320px\) \{[\s\S]*\.captain-action-dock \{[\s\S]*position: fixed;[\s\S]*max-height: calc\(100dvh - 142px\)/);
   for (const day of ["monday", "tuesday", "wednesday", "thursday", "friday"]) assert.match(app, new RegExp(`group\\("${day}"`));
   assert.match(app, /data-day="\$\{day\}"/);
+  assert.match(app, /type="button" data-action="add-week-activity"/, "adding an activity cannot submit the surrounding form");
+  assert.match(app, /Week changes are still local\. Publish them before schedule actions\./);
+  assert.match(app, /Publish the week changes first/);
   assert.doesNotMatch(app, /data-week-field="activity:date"/, "an activity inherits the date of its selected weekday");
   assert.match(app, /Location — optional/);
   assert.match(app, /Description — optional/);

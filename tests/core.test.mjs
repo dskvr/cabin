@@ -736,7 +736,11 @@ test("week activities retain stable identities, order, valid timing, and duratio
   const renamed = updateActivity(added, addedActivity.id, { name: "Relay workshop", link: "https://example.com/workshop" });
   assert.equal(renamed.activities.at(1)?.id, addedActivity.id);
   assert.equal(renamed.activities.at(1)?.link, "https://example.com/workshop");
-  const removed = removeActivity(renamed, addedActivity.id);
+  const beforeTimeEdit = structuredClone(renamed.activities);
+  const timed = updateActivity(renamed, addedActivity.id, { starts_at: "10:45", ends_at: "13:00" });
+  assert.deepEqual(timed.activities.filter((item) => item.id !== addedActivity.id), beforeTimeEdit.filter((item) => item.id !== addedActivity.id), "editing a time cannot alter any other activity");
+  assert.deepEqual(timed.activities.find((item) => item.id === addedActivity.id), { ...beforeTimeEdit.find((item) => item.id === addedActivity.id), starts_at: "10:45", ends_at: "13:00" }, "editing a time preserves every other field");
+  const removed = removeActivity(timed, addedActivity.id);
   assert.equal(removeActivity(removed, "absent"), removed, "removing an absent ID is a no-op");
   assert.equal(validateWeekConfiguration({ ...removed, presentation_minutes: 1, question_minutes: 2 }).valid, true);
   assert.equal(validateWeekConfiguration({ ...removed, presentation_minutes: 0 }).valid, false);
