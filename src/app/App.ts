@@ -246,6 +246,10 @@ function activityTimingState(slot: ProvisionedWeek, activity: Pick<WeekActivityV
   return "upcoming";
 }
 
+function weekLoadingState(title: string, detail: string): string {
+  return `<section class="week-loading-state" role="status" aria-live="polite"><div class="week-loading-card"><span class="spinner large" aria-hidden="true"></span><div><span class="eyebrow">Captain’s Cabin</span><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p></div><span class="week-loading-progress" aria-hidden="true"><i></i></span></div></section>`;
+}
+
 function storedTheme(): ColorTheme {
   try {
     return globalThis.localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark";
@@ -522,10 +526,10 @@ export class DemoDayApp {
         `}
         <main class="${this.#route.name === "display" ? "display-main" : "page"}">${page}</main>
         ${this.#route.name === "display" ? "" : `<footer><nav>${this.#route.name === "session" ? `<a href="#/display/${escapeAttr(this.#route.naddr)}" data-fullscreen-display>Front of room display</a>` : ""}<a href="#/week-setup">Week setup</a><a href="#/create">I AM THE CAPTAIN NOW</a><a href="#/">Cohort week</a><a href="#/advanced">Advanced</a></nav></footer>`}
-        ${this.#busy ? `<div class="modal-backdrop busy-overlay"><section class="modal busy-card" role="dialog" aria-modal="true" aria-live="polite" aria-label="${escapeAttr(this.#busy)}"><span class="spinner large" aria-hidden="true"></span><strong>${escapeHtml(this.#busy)}…</strong><span class="busy-progress" aria-hidden="true"><i></i></span></section></div>` : ""}
-        ${this.#renderNoticeModal(announceNotice)}
-        ${this.#renderZapModal()}
       </div>
+      ${this.#busy ? `<div class="modal-backdrop busy-overlay"><section class="modal busy-card" role="dialog" aria-modal="true" aria-live="polite" aria-label="${escapeAttr(this.#busy)}"><span class="spinner large" aria-hidden="true"></span><strong>${escapeHtml(this.#busy)}…</strong><span class="busy-progress" aria-hidden="true"><i></i></span></section></div>` : ""}
+      ${this.#renderNoticeModal(announceNotice)}
+      ${this.#renderZapModal()}
     `;
     this.#cleanupMotion = activateMotion(this.#root, animateEntrance, animateModal);
     if (focusedControl?.name) {
@@ -600,7 +604,7 @@ export class DemoDayApp {
     const theme = configuration?.theme ?? `Week ${slot.week_number}`;
     const description = configuration?.public_description ?? "The public week configuration has not been published yet.";
     const header = `<section class="week-board-header"><div><span class="eyebrow">Cohort week ${slot.week_number}</span><h1>${escapeHtml(theme)}</h1><p>${escapeHtml(description)}</p></div><div class="week-board-range"><span>Monday</span><strong>${escapeHtml(displayDate(slot.start_date))}</strong><span>Friday</span><strong>${escapeHtml(displayDate(fridayDate))}</strong></div></section>`;
-    if (this.#publicCabinLoading && !configuration) return `${header}<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading published week…</section>`;
+    if (this.#publicCabinLoading && !configuration) return `${header}${weekLoadingState(`Loading week ${slot.week_number}`, "Reading the published schedule from relays")}`;
     const cards = WEEK_DAYS.map((day) => {
       const date = weekDayDate(slot, day);
       const activities = configuration?.activities.filter((activity) => activity.day === day)
@@ -677,7 +681,7 @@ export class DemoDayApp {
     const publication = this.#publicScheduleForCurrentConfiguration(slot);
     const date = weekDayDate(slot, day);
     const navigation = WEEK_DAYS.map((candidate) => `<a class="week-day-tab ${candidate === day ? "active" : ""} ${candidate === "friday" ? "friday" : ""}" href="#/week/${slot.week_number}/${candidate}" ${candidate === day ? 'aria-current="page"' : ""}>${WEEK_DAY_LABELS[candidate]}</a>`).join("");
-    if (this.#publicCabinLoading && !configuration) return `<section class="day-page"><a class="back-link" href="#/">← Week ${slot.week_number}</a><header class="day-page-header"><span class="eyebrow">${escapeHtml(displayDate(date))} · Atlantic/Madeira</span><h1>${WEEK_DAY_LABELS[day]}</h1></header><nav class="week-day-tabs" aria-label="Week days">${navigation}</nav><section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading published schedule…</section></section>`;
+    if (this.#publicCabinLoading && !configuration) return `<section class="day-page"><a class="back-link" href="#/">← Week ${slot.week_number}</a><header class="day-page-header"><span class="eyebrow">${escapeHtml(displayDate(date))} · Atlantic/Madeira</span><h1>${WEEK_DAY_LABELS[day]}</h1></header><nav class="week-day-tabs" aria-label="Week days">${navigation}</nav>${weekLoadingState(`Loading ${WEEK_DAY_LABELS[day]}`, "Reading the published schedule from relays")}</section>`;
     const activities = configuration?.activities.filter((activity) => activity.day === day)
       ?? publication?.activities.filter((activity) => activity.day === day)
       ?? defaultActivities.filter((activity) => activity.day === day);
@@ -732,7 +736,7 @@ export class DemoDayApp {
     const seed = persisted?.configuration ?? seedWeekConfiguration(slot, { theme: `Week ${slot.week_number}`, public_description: "" });
     const scope = `week-${slot.week_number}`;
     if (this.#weekLoading.has(scope)) {
-      return `<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading week configuration…</section>`;
+      return weekLoadingState(`Loading week ${slot.week_number}`, "Reading your configuration from relays");
     }
     const loadError = this.#weekLoadErrors.get(scope);
     if (loadError) {
@@ -740,7 +744,7 @@ export class DemoDayApp {
     }
     if (!this.#weekResolved.has(scope)) {
       void this.#refreshWeekConfiguration(slot);
-      return `<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading week configuration…</section>`;
+      return weekLoadingState(`Loading week ${slot.week_number}`, "Reading your configuration from relays");
     }
     if (!persisted && !captainSlot) return `<section class="panel"><h2>Captain’s Cabin</h2><p>The captain has not published this week yet.</p></section>`;
     if (persisted && !captainSlot) {
@@ -756,7 +760,7 @@ export class DemoDayApp {
     const captain = this.#profile(slot.captain_pubkey);
     if (this.#weekPreview?.scope === scope) {
       if (this.#weekPreview.status === "loading") {
-        return `<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading preview…</section>`;
+        return weekLoadingState("Preparing preview", "Rendering the public week exactly as participants will see it");
       }
       return `<section class="narrow-page week-workspace">${publicWeekPreview(publicWeekProjection(draft))}<div class="form-actions"><button class="button button-secondary" data-action="return-to-week-editing" data-week-scope="${escapeAttr(scope)}">Return to editing</button></div></section>`;
     }
@@ -857,10 +861,7 @@ export class DemoDayApp {
       ${profileComponent({ picture: profile.picture, pubkey: identity.public_key_hex, name: profile.name, className: "profile-confirm" })}
       <form class="panel form-stack" data-form-action="create-session" data-draft-scope="create">
         ${field({ label: "Demo-day name", name: "session_name", value: this.#draft("create", "session_name"), placeholder: "SEC-08 — Week 3 Demo Day", required: true, maxlength: 140 })}
-        <div class="form-divider"><span>Your demonstration</span></div>
-        ${field({ label: "Your demo name", name: "demo_name", value: this.#draft("create", "demo_name"), required: true, maxlength: 140 })}
-        ${textarea({ label: "Your demo description", name: "demo_description", value: this.#draft("create", "demo_description"), required: true, maxlength: 4000, rows: 6 })}
-        ${field({ label: "Your demo link — optional", name: "demo_link", value: this.#draft("create", "demo_link"), type: "url", placeholder: "https://…" })}
+        <p>This creates the room only. Participants—including the captain, if presenting—add their demos after joining.</p>
         <div class="form-actions"><button class="button button-primary button-large" type="submit">Create demo day</button></div>
       </form>
     </section>`;
@@ -927,6 +928,7 @@ export class DemoDayApp {
     if (!this.#identityReady(identity)) {
       return `<section class="narrow-page"><a class="back-link" href="#/">← Active demo days</a><h1>Who are you?</h1>${this.#renderProfileImport(identity)}</section>`;
     }
+    if (!ownEntry && identity.public_key_hex === session.event.pubkey) return this.#renderCaptainSessionWithoutEntry(session, entries);
     if (!ownEntry) return this.#renderJoinForm(session, identity);
     return this.#renderParticipantSession(session, entries, ownEntry, identity);
   }
@@ -945,6 +947,26 @@ export class DemoDayApp {
         ${field({ label: "Project link", name: "demo_link", value: this.#draft("join", "demo_link"), type: "url", placeholder: "https://…" })}
         <div class="form-actions"><button class="button button-primary button-large" type="submit">Join demo day</button></div>
       </form>
+    </section>`;
+  }
+
+  #renderCaptainSessionWithoutEntry(session: ParsedSession, entries: ParsedEntry[]): string {
+    const captain = this.#profile(session.event.pubkey);
+    const current = session.state.current_demo_pubkey
+      ? entries.find((entry) => entry.author === session.state.current_demo_pubkey) ?? null
+      : null;
+    const elo = calculateElo(session.state.presented.map((run) => run.pubkey), entries);
+    return `<section class="session-main">
+      <div class="session-title-row"><div><span class="eyebrow">Captain session</span><h1>${escapeHtml(session.state.name)}</h1>${captainCard({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name })}<p>${entries.length} participants</p></div></div>
+      ${this.#renderCurrentDemo(session, current)}
+      ${this.#renderCaptainControls(session, entries)}
+      ${this.#renderLeaderboard(elo.rows, entries, session)}
+      <section class="panel form-stack"><h2>Add my demo — optional</h2><p>Only complete this if the captain is also presenting.</p><form data-form-action="join-session" data-draft-scope="join">
+        ${field({ label: "Project name", name: "demo_name", value: this.#draft("join", "demo_name"), required: true, maxlength: 140 })}
+        ${textarea({ label: "Project description", name: "demo_description", value: this.#draft("join", "demo_description"), required: true, maxlength: 4000, rows: 5 })}
+        ${field({ label: "Project link", name: "demo_link", value: this.#draft("join", "demo_link"), type: "url", placeholder: "https://…" })}
+        <div class="form-actions"><button class="button button-secondary" type="submit">Join as a presenter</button></div>
+      </form></section>
     </section>`;
   }
 
@@ -1820,9 +1842,7 @@ export class DemoDayApp {
     if (!week) throw new Error("Publish this week's configuration before creating a demo day.");
     const name = clampText(String(formData.get("session_name") ?? ""), 140);
     if (!name) throw new Error("Demo-day name is required");
-    const demo = this.#formDemo(formData);
     const sessionD = `sedd-session:${randomHex(16)}`;
-    const address = `${APP_KIND}:${identity.public_key_hex}:${sessionD}`;
     const state: DemoDaySessionV1 = {
       v: 1,
       type: "session",
@@ -1848,29 +1868,7 @@ export class DemoDayApp {
       secretKeyHex: identity.secret_key_hex,
       createdAt: nextCreatedAt(),
     });
-    const entryContent: ParticipantEntryV1 = {
-      v: 1,
-      type: "entry",
-      real_pubkey: identity.real_pubkey_hex as string,
-      source_profile_event_id: identity.source_profile_event_id as string,
-      source_profile_relay: identity.source_profile_relay as string,
-      demo,
-      ranking: [],
-      feedback: {},
-      updated_at_ms: Date.now(),
-    };
-    const profile = this.#repository.getProfile(identity.public_key_hex) ?? await this.#repository.ensureProfile(identity.public_key_hex);
-    if (!profile) throw new Error("Copied profile is not available");
-    const entryEvent = await buildEntryEvent({
-      sessionAddress: address,
-      sessionD,
-      entry: entryContent,
-      profile: parseProfileMetadata(profile),
-      secretKeyHex: identity.secret_key_hex,
-      createdAt: nextCreatedAt(),
-    });
-    await this.#repository.publish(sessionEvent);
-    await this.#repository.publish(entryEvent);
+    await this.#repository.publishConfirmed(sessionEvent);
     this.#clearDraftScope("create");
     this.#notice = { kind: "success", text: "Demo day created and published." };
     navigate(`/session/${sessionNaddr(identity.public_key_hex, sessionD)}`);

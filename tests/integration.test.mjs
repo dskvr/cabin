@@ -108,7 +108,7 @@ test("public navigation exposes a five-day week board with Friday highlighted", 
 
   assert.match(appSource, /class="brand-logo" src="\.\/sovereign-engineering-logo\.svg"/);
   assert.match(appSource, /class="brand-week">Week \$\{headerWeek\.week_number\}/);
-  assert.match(appSource, /if \(this\.#publicCabinLoading && !configuration\) return `\$\{header\}<section class="panel week-state-panel"/);
+  assert.match(appSource, /if \(this\.#publicCabinLoading && !configuration\) return `\$\{header\}\$\{weekLoadingState/);
   assert.match(styles, /\.brand-week \{[\s\S]*color: var\(--yellow\)/);
   assert.match(logo, /viewBox="0 0 350\.0407 405\.535"/);
   assert.match(appSource, /WEEK_DAYS\.map/);
@@ -123,6 +123,20 @@ test("public navigation exposes a five-day week board with Friday highlighted", 
   assert.match(styles, /\.activity-timing-past[\s\S]*text-decoration: line-through/);
   assert.match(styles, /\.day-detail-panel\.activity-timing-active/);
   assert.match(styles, /@media \(max-width: 660px\)/);
+});
+
+test("Demo Day creation creates only the room and keeps captain participation optional", () => {
+  const appSource = readFileSync(new URL("../src/app/App.ts", import.meta.url), "utf8");
+  const createViewStart = appSource.indexOf("#renderCreate(): string");
+  const createView = appSource.slice(createViewStart, appSource.indexOf("\n  #renderProfileImport(", createViewStart));
+  const createActionStart = appSource.indexOf("async #createSession(");
+  const createAction = appSource.slice(createActionStart, appSource.indexOf("async #joinSession(", createActionStart));
+
+  assert.match(createView, /This creates the room only/);
+  assert.doesNotMatch(createView, /name: "demo_name"|name: "demo_description"|name: "demo_link"/);
+  assert.doesNotMatch(createAction, /buildEntryEvent|entryContent|#formDemo/);
+  assert.match(appSource, /#renderCaptainSessionWithoutEntry/);
+  assert.match(appSource, /Join as a presenter/);
 });
 
 test("NIP-07 login uses the extension account for signed events", async () => {
@@ -595,8 +609,8 @@ test("week workspace ships every loading, error, retry, accessibility, and respo
   const css = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
 
   for (const copy of [
-    "Loading week configuration…",
-    "Loading preview…",
+    "Reading your configuration from relays",
+    "Preparing preview",
     "This identity is not assigned a week to configure.",
     "We couldn't publish this week. Check your Nostr connection and signing identity, then try again.",
     "Try again",
@@ -611,6 +625,8 @@ test("week workspace ships every loading, error, retry, accessibility, and respo
   assert.doesNotMatch(app, /publication-state/, "form status is never buried inline at the bottom of the editor");
   assert.match(app, /class="modal-backdrop busy-overlay"/);
   assert.match(app, /class="modal busy-card" role="dialog" aria-modal="true"/);
+  assert.match(app, /<\/div>\s*\$\{this\.#busy \? `<div class="modal-backdrop busy-overlay"/, "busy dialogs mount outside the app shell");
+  assert.match(css, /\.busy-overlay \{[\s\S]*position: fixed !important;[\s\S]*z-index: 1000;/);
   assert.match(app, /Try publishing again/);
   assert.match(app, /focusWeekInvalid/);
   assert.match(css, /@media \(max-width: 660px\)/);
