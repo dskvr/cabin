@@ -11,7 +11,7 @@ import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
 import { buildExport } from "../dist/assets/domain/export.js";
 import { buildEntryEvent, buildSessionEvent, buildWeekConfigurationEvent, copyProfileToEphemeralKey } from "../dist/assets/nostr/event-builders.js";
 import { parseParticipantEntryEvent, parseSessionEvent } from "../dist/assets/nostr/event-parsers.js";
-import { formatTimer, sessionTimerDurations } from "../dist/assets/domain/timer.js";
+import { sessionTimerDurations } from "../dist/assets/domain/timer.js";
 import { finalizeEvent, getPublicKey } from "../dist/assets/nostr/crypto.js";
 import { NostrRepository } from "../dist/assets/nostr/repository.js";
 import { InMemoryTestTransport } from "../dist/assets/nostr/transport.js";
@@ -129,8 +129,16 @@ test("a session preserves its published 1+2 timing snapshot through the periodic
   const session = parseSessionEvent(event);
   assert.ok(session);
   const durations = sessionTimerDurations(session.state);
-  assert.deepEqual(formatTimer(60_000, durations), { phase: "QUESTIONS", value: "02:00", className: "questions" });
-  assert.deepEqual(formatTimer(180_000, durations), { phase: "OVERTIME", value: "+00:00", className: "overtime" });
+  const previousMatchMedia = globalThis.matchMedia;
+  globalThis.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  try {
+    const { formatRenderedTimer } = await import("../dist/assets/app/App.js");
+    assert.deepEqual(formatRenderedTimer(1_000, durations.presentationMs, durations.questionMs, 61_000), { phase: "QUESTIONS", value: "02:00", className: "questions" });
+    assert.deepEqual(formatRenderedTimer(1_000, durations.presentationMs, durations.questionMs, 181_000), { phase: "OVERTIME", value: "+00:00", className: "overtime" });
+  } finally {
+    if (previousMatchMedia) globalThis.matchMedia = previousMatchMedia;
+    else delete globalThis.matchMedia;
+  }
 });
 
 test("week configuration rejects invalid boundaries and detects a stale revision base", async () => {

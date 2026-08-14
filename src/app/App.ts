@@ -176,6 +176,16 @@ function randomHex(bytesLength: number): string {
     .join("");
 }
 
+/** Format both the initial render and each periodic tick from the same timer snapshot. */
+export function formatRenderedTimer(
+  startedAtMs: number,
+  presentationMs: number,
+  questionMs: number,
+  nowMs = Date.now(),
+) {
+  return formatTimer(nowMs - startedAtMs, { presentationMs, questionMs });
+}
+
 function chooseLatest(items: RelayEvent[]): RelayEvent | null {
   let selected: RelayEvent | null = null;
   for (const item of items) {
@@ -764,7 +774,7 @@ export class DemoDayApp {
   #renderTimer(startedAtMs: number | null, display: boolean, session: DemoDaySessionV1): string {
     if (startedAtMs == null) return "";
     const durations = sessionTimerDurations(session);
-    const timer = formatTimer(Date.now() - startedAtMs, durations);
+    const timer = formatRenderedTimer(startedAtMs, durations.presentationMs, durations.questionMs);
     return `<div class="timer ${display ? "display-timer" : ""} timer-${timer.className}" data-timer-start="${startedAtMs}" data-timer-presentation-ms="${durations.presentationMs}" data-timer-question-ms="${durations.questionMs}">
       <span data-timer-phase>${timer.phase}</span>
       <strong data-timer-value>${timer.value}</strong>
@@ -2408,7 +2418,7 @@ export class DemoDayApp {
       const presentationMs = Number(element.dataset.timerPresentationMs);
       const questionMs = Number(element.dataset.timerQuestionMs);
       if (!Number.isSafeInteger(presentationMs) || presentationMs <= 0 || !Number.isSafeInteger(questionMs) || questionMs <= 0) continue;
-      const timer = formatTimer(Date.now() - startedAt, { presentationMs, questionMs });
+      const timer = formatRenderedTimer(startedAt, presentationMs, questionMs);
       const phase = element.querySelector<HTMLElement>("[data-timer-phase]");
       const value = element.querySelector<HTMLElement>("[data-timer-value]");
       if (phase) phase.textContent = timer.phase;
