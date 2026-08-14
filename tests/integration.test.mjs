@@ -2,15 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { APP_KIND } from "../dist/assets/config/relays.js";
+import { APP_KIND, GIFT_WRAP_KIND } from "../dist/assets/config/relays.js";
 import { COHORT_MANIFEST } from "../dist/assets/config/cohort.js";
 import { parseCohortManifest, deriveProvisionedWeeks, weekD, weekForCaptain } from "../dist/assets/domain/cohort.js";
 import { parseWeekConfiguration, removeActivity, removeProposalField, seedWeekConfiguration } from "../dist/assets/domain/week.js";
 import { npubEncode } from "../dist/assets/nostr/bech32.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
 import { buildExport } from "../dist/assets/domain/export.js";
-import { buildEntryEvent, buildSessionEvent, buildWeekConfigurationEvent, copyProfileToEphemeralKey } from "../dist/assets/nostr/event-builders.js";
-import { parseParticipantEntryEvent, parseSessionEvent } from "../dist/assets/nostr/event-parsers.js";
+import { buildEntryEvent, buildPrivateProposalEvents, buildPrivateScheduleEvent, buildPublicScheduleEvent, buildSessionEvent, buildWeekArchiveEvent, buildWeekConfigurationEvent, copyProfileToEphemeralKey } from "../dist/assets/nostr/event-builders.js";
+import { parseParticipantEntryEvent, parsePrivateProposalGift, parseSessionEvent } from "../dist/assets/nostr/event-parsers.js";
+import { configurationForArchive, proposalIdFor, publicScheduleProjection } from "../dist/assets/domain/cabin.js";
 import { sessionTimerDurations } from "../dist/assets/domain/timer.js";
 import { finalizeEvent, getPublicKey } from "../dist/assets/nostr/crypto.js";
 import { NostrRepository } from "../dist/assets/nostr/repository.js";
@@ -116,6 +117,83 @@ test("manifest-assigned captain publishes and reads a complete week configuratio
   assert.equal(loaded.configuration.public_description, "A signed, intake-closed week.");
   assert.equal(loaded.configuration.intake_open, false);
   assert.equal(repository.getWeek({ ...slot, captain_pubkey: getPublicKey(key(73)) }), null, "wrong-author coordinates cannot read the state");
+});
+
+test("private proposal, draft schedule, explicit publication, and archive round-trip without leaking private data", async () => {
+  const transport = new InMemoryTestTransport();
+  const captainRepository = new NostrRepository(transport);
+  const participantRepository = new NostrRepository(transport);
+  const publicRepository = new NostrRepository(transport);
+  captainRepository.start(); participantRepository.start(); publicRepository.start();
+  const captainSecret = key(121);
+  const participantSecret = key(122);
+  const captainPubkey = getPublicKey(captainSecret);
+  const participantPubkey = getPublicKey(participantSecret);
+  const manifest = parseCohortManifest({
+    v: 1, cohort_id: "madeira-2026", start_date: "2026-08-12", end_date: "2026-09-08", starting_week: 1,
+    captains: [{ week_number: 1, npub: npubEncode(captainPubkey) }], participant_allowlist: [npubEncode(participantPubkey)],
+  });
+  assert.ok(manifest);
+  const [slot] = deriveProvisionedWeeks(manifest);
+  assert.ok(slot);
+  const configuration = { ...seedWeekConfiguration(slot, { theme: "Encrypted", public_description: "Safe public metadata." }), status: "active", intake_open: true };
+  const configurationEvent = await buildWeekConfigurationEvent({ slot, configuration, secretKeyHex: captainSecret, createdAt: 100 });
+  await captainRepository.publish(configurationEvent);
+  const answers = Object.fromEntries(configuration.proposal_fields.map((field, index) => [field.id, index ? "secret summary" : "private title"]));
+  const proposal = {
+    v: 1, type: "captains-cabin-proposal", proposal_id: proposalIdFor(slot, participantPubkey), cohort_id: slot.cohort_id,
+    week_number: slot.week_number, configuration_event_id: configurationEvent.id, author_pubkey: participantPubkey,
+    answers, created_at_ms: 101_000, updated_at_ms: 101_000,
+  };
+  const wrapped = await buildPrivateProposalEvents({ proposal, slot, configuration, configurationEventId: configurationEvent.id, secretKeyHex: participantSecret, createdAt: 101 });
+  for (const event of [wrapped.captain]) {
+    assert.equal(event.kind, GIFT_WRAP_KIND);
+    const relayVisible = JSON.stringify({ tags: event.tags, content: event.content, pubkey: event.pubkey });
+    assert.doesNotMatch(relayVisible, /private title|secret summary|proposal-round-trip|madeira-2026|week_number|author_pubkey/);
+  }
+  await participantRepository.publish(wrapped.captain);
+  assert.equal((await captainRepository.privateProposals({ slot, configuration, configurationEventId: configurationEvent.id, recipientSecretKeyHex: captainSecret }))[0]?.proposal.answers[configuration.proposal_fields[0].id], "private title");
+  assert.equal((await participantRepository.privateProposals({ slot, configuration, configurationEventId: configurationEvent.id, recipientSecretKeyHex: participantSecret })).length, 0, "no participant-addressed relay copy exposes the author pubkey");
+  assert.equal(await parsePrivateProposalGift({ event: wrapped.captain, recipientSecretKeyHex: key(123), slot, configuration, configurationEventId: configurationEvent.id }), null, "a third party cannot decrypt the captain copy");
+
+  const amended = { ...proposal, answers: { ...answers, [configuration.proposal_fields[0].id]: "amended private title" }, updated_at_ms: 102_000 };
+  const amendment = await buildPrivateProposalEvents({ proposal: amended, slot, configuration, configurationEventId: configurationEvent.id, secretKeyHex: participantSecret, createdAt: 102 });
+  await participantRepository.publish(amendment.captain);
+  const captainInbox = await captainRepository.privateProposals({ slot, configuration, configurationEventId: configurationEvent.id, recipientSecretKeyHex: captainSecret });
+  assert.equal(captainInbox.length, 1);
+  assert.equal(captainInbox[0]?.proposal.answers[configuration.proposal_fields[0].id], "amended private title", "only the author's newest amendment is selected");
+  await assert.rejects(buildPrivateProposalEvents({ proposal: amended, slot, configuration: { ...configuration, intake_open: false }, configurationEventId: configurationEvent.id, secretKeyHex: participantSecret, createdAt: 103 }), /closed/);
+
+  const activity = configuration.activities[0];
+  assert.ok(activity);
+  const schedule = {
+    v: 1, type: "captains-cabin-private-schedule", draft_id: "schedule-round-trip", cohort_id: slot.cohort_id,
+    week_number: slot.week_number, configuration_event_id: configurationEvent.id, base_event_id: null,
+    decisions: [{ proposal_id: proposal.proposal_id, decision: "accepted" }],
+    placements: [{ id: "placement-round-trip", proposal_id: proposal.proposal_id, activity_id: activity.id, starts_at: activity.starts_at, ends_at: "18:30", public_title: "Approved title", public_presenter: "Alice", public_description: "Approved description" }], updated_at_ms: 104_000,
+  };
+  const draft = await buildPrivateScheduleEvent({ schedule, slot, secretKeyHex: captainSecret, createdAt: 104 });
+  assert.doesNotMatch(JSON.stringify(draft.wrap), /proposal-round-trip|Approved title|Alice/);
+  await captainRepository.publish(draft.wrap);
+  assert.deepEqual((await captainRepository.privateSchedule(slot, captainSecret))?.schedule, schedule);
+  const projection = publicScheduleProjection(schedule, configuration, draft.inner.id, "publication-round-trip", 105_000);
+  const publication = await buildPublicScheduleEvent({ schedule: projection, slot, secretKeyHex: captainSecret, createdAt: 105 });
+  await captainRepository.publish(publication);
+  assert.deepEqual((await publicRepository.refreshPublicSchedule(slot))?.schedule, projection);
+  assert.doesNotMatch(publication.content, /proposal-round-trip|private title|secret summary|decisions|answers/);
+
+  const archive = {
+    v: 1, type: "captains-cabin-week-archive", archive_id: "archive-round-trip", cohort_id: slot.cohort_id,
+    week_number: slot.week_number, configuration_event_id: configurationEvent.id, public_schedule_event_id: publication.id,
+    completed_at_ms: 106_000, configuration: configurationForArchive(configuration), public_schedule: projection,
+  };
+  const archiveEvent = await buildWeekArchiveEvent({ archive, slot, secretKeyHex: captainSecret, createdAt: 106 });
+  await captainRepository.publish(archiveEvent);
+  assert.deepEqual((await publicRepository.refreshWeekArchive(slot))?.archive, archive);
+  assert.doesNotMatch(archiveEvent.content, /private title|secret summary|proposal-round-trip|decisions|answers/);
+  const rewrite = await buildWeekArchiveEvent({ archive: { ...archive, archive_id: "archive-rewrite", completed_at_ms: 107_000, configuration: { ...archive.configuration, theme: "Rewritten history" } }, slot, secretKeyHex: captainSecret, createdAt: 107 });
+  await captainRepository.publish(rewrite);
+  assert.equal((await publicRepository.refreshWeekArchive(slot))?.event.id, archiveEvent.id, "the first valid archive is immutable even if the captain later signs another event");
 });
 
 test("a session preserves its published 1+2 timing snapshot through the periodic timer path", async () => {
@@ -413,6 +491,20 @@ test("week editor actions stay local and publication remains a deliberate guarde
   assert.match(publication, /baseEventId !== \(latest\?\.event\.id \?\? null\)/, "stale bases block signing");
   assert.match(publication, /accepted\?\.event\.id !== event\.id/, "read-back must confirm the just-published event");
   assert.match(publication, /#weekDraftBaseEvents\.set\(scope, accepted\.event\.id\)/, "verified read-back advances the retained draft base");
+});
+
+test("Captain's Cabin UI keeps private drafting and public publication behind separate deliberate actions", () => {
+  const app = readFileSync(new URL("../dist/assets/app/App.js", import.meta.url), "utf8");
+  for (const copy of [
+    "Submit private proposal", "Update private proposal", "Private proposal inbox", "Save private schedule",
+    "Publish public schedule", "Complete and archive week", "Read-only archive", "Clone week",
+  ]) assert.match(app, new RegExp(copy));
+  const publicProjection = app.slice(app.indexOf("#publishCabinSchedule"), app.indexOf("#archiveCabinWeek"));
+  assert.match(publicProjection, /publicScheduleProjection/);
+  assert.match(publicProjection, /buildPublicScheduleEvent/);
+  assert.doesNotMatch(publicProjection, /proposal\.answers|proposalInbox/);
+  const proposalSubmit = app.slice(app.indexOf("async #submitCabinProposal"), app.indexOf("#saveCabinPlacement", app.indexOf("async #submitCabinProposal")));
+  assert.equal((proposalSubmit.match(/#repository\.publish\(/g) ?? []).length, 1, "proposal submission publishes only the captain-addressed envelope");
 });
 
 test("multi-client captain, participant, display-state, ranking, closure, and export flow", async () => {

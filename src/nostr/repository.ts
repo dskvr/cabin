@@ -1,9 +1,11 @@
 import {
   APP_KIND,
   DEFAULT_RELAYS,
+  GIFT_WRAP_KIND,
   PENDING_PUBLISH_STORAGE_KEY,
   PROFILE_KIND,
   ZAP_RECEIPT_KIND,
+  WEEK_ARCHIVE_KIND,
 } from "../config/relays.js";
 import type {
   NostrEvent,
@@ -15,10 +17,11 @@ import type {
 } from "../domain/types.js";
 import { weekD, type ProvisionedWeek } from "../domain/cohort.js";
 import type { ParsedWeekConfiguration } from "./event-parsers.js";
+import type { PrivateProposal, PrivateSchedule, PublicSchedule, WeekArchive } from "../domain/cabin.js";
 import { compareReplaceable, dedupe } from "../domain/utils.js";
 import { verifyEvent } from "./crypto.js";
 import { EventIndex } from "./event-index.js";
-import { parseParticipantEntryEvent, parseSessionEvent, parseWeekConfigurationEvent } from "./event-parsers.js";
+import { parseParticipantEntryEvent, parsePrivateProposalGift, parsePrivateScheduleGift, parsePublicScheduleEvent, parseSessionEvent, parseWeekArchiveEvent, parseWeekConfigurationEvent } from "./event-parsers.js";
 import type { NostrTransport } from "./transport.js";
 
 interface PendingPublish {
@@ -194,6 +197,10 @@ export class NostrRepository {
     }
   }
 
+  async publishAll(events: readonly NostrEvent[]): Promise<void> {
+    for (const event of events) await this.publish(event);
+  }
+
   async retryPending(): Promise<void> {
     for (const pending of [...this.#pending]) {
       try {
@@ -278,6 +285,70 @@ export class NostrRepository {
     return this.#transport.subscribe(DEFAULT_RELAYS, {
       kinds: [APP_KIND], authors: [slot.captain_pubkey], "#d": [weekD(slot)],
     }, { onevent: (item) => void this.ingest(item) });
+  }
+
+  async privateProposals({ slot, configuration, configurationEventId, recipientSecretKeyHex }: {
+    slot: ProvisionedWeek;
+    configuration: ParsedWeekConfiguration["configuration"];
+    configurationEventId: string;
+    recipientSecretKeyHex: string;
+  }): Promise<Array<{ event: NostrEvent; inner: NostrEvent; proposal: PrivateProposal }>> {
+    const recipient = (await import("./crypto.js")).getPublicKey(recipientSecretKeyHex);
+    await Promise.all([
+      this.queryRaw(DEFAULT_RELAYS, { kinds: [GIFT_WRAP_KIND], "#p": [recipient], limit: 1_000 }),
+      this.queryRaw(DEFAULT_RELAYS, { kinds: [APP_KIND], authors: [slot.captain_pubkey], "#d": [weekD(slot)], limit: 100 }),
+    ]);
+    const revisions = this.#index.allEvents().map((event) => parseWeekConfigurationEvent(event, slot)).filter((item): item is ParsedWeekConfiguration => item !== null);
+    if (!revisions.some((item) => item.event.id === configurationEventId)) revisions.push({ event: { ...(this.getEventById(configurationEventId) ?? { id: configurationEventId, pubkey: slot.captain_pubkey, created_at: 0, kind: APP_KIND, tags: [], content: "", sig: "" }) }, configuration, d: weekD(slot), address: "" });
+    const gifts = this.#index.allEvents().filter((event) => event.kind === GIFT_WRAP_KIND);
+    const parsed = (await Promise.all(gifts.flatMap((event) => revisions.map(async (revision) => {
+      const item = await parsePrivateProposalGift({ event, recipientSecretKeyHex, slot, configuration: revision.configuration, configurationEventId: revision.event.id });
+      if (!item) return null;
+      const effective = revisions.filter((candidate) => candidate.event.created_at <= item.inner.created_at).reduce<ParsedWeekConfiguration | null>((latest, candidate) => !latest || compareReplaceable(candidate.event, latest.event) ? candidate : latest, null);
+      return effective?.event.id === revision.event.id ? item : null;
+    })))).filter((item): item is NonNullable<typeof item> => item !== null);
+    const latest = new Map<string, NonNullable<(typeof parsed)[number]>>();
+    for (const item of parsed) {
+      if (!item) continue;
+      const key = `${item.proposal.author_pubkey}:${item.proposal.proposal_id}`;
+      const current = latest.get(key);
+      if (!current || item.inner.created_at > current.inner.created_at || item.inner.created_at === current.inner.created_at && item.inner.id > current.inner.id) latest.set(key, item);
+    }
+    return [...latest.values()].sort((a, b) => a.proposal.updated_at_ms - b.proposal.updated_at_ms);
+  }
+
+  async privateSchedule(slot: ProvisionedWeek, recipientSecretKeyHex: string): Promise<{ event: NostrEvent; inner: NostrEvent; schedule: PrivateSchedule } | null> {
+    await this.queryRaw(DEFAULT_RELAYS, { kinds: [GIFT_WRAP_KIND], "#p": [slot.captain_pubkey], limit: 1_000 });
+    const parsed = await Promise.all(this.#index.allEvents().map((event) => parsePrivateScheduleGift(event, recipientSecretKeyHex, slot)));
+    return parsed.filter((item): item is NonNullable<typeof item> => item !== null).reduce<NonNullable<(typeof parsed)[number]> | null>((latest, item) =>
+      !latest || item.inner.created_at > latest.inner.created_at || item.inner.created_at === latest.inner.created_at && item.inner.id > latest.inner.id ? item : latest,
+    null);
+  }
+
+  publicSchedule(slot: ProvisionedWeek): { event: NostrEvent; schedule: PublicSchedule } | null {
+    const candidates = this.#index.allEvents().map((event) => {
+      const schedule = parsePublicScheduleEvent(event, slot);
+      return schedule ? { event, schedule } : null;
+    }).filter((item): item is { event: NostrEvent; schedule: PublicSchedule } => item !== null);
+    return candidates.reduce<(typeof candidates)[number] | null>((latest, item) => !latest || compareReplaceable(item.event, latest.event) ? item : latest, null);
+  }
+
+  async refreshPublicSchedule(slot: ProvisionedWeek): Promise<{ event: NostrEvent; schedule: PublicSchedule } | null> {
+    await this.queryRaw(DEFAULT_RELAYS, { kinds: [APP_KIND], authors: [slot.captain_pubkey], "#d": [`captains-cabin:schedule:${slot.cohort_id}:${slot.week_number}`], limit: 20 });
+    return this.publicSchedule(slot);
+  }
+
+  weekArchive(slot: ProvisionedWeek): { event: NostrEvent; archive: WeekArchive } | null {
+    const candidates = this.#index.allEvents().map((event) => {
+      const archive = parseWeekArchiveEvent(event, slot);
+      return archive ? { event, archive } : null;
+    }).filter((item): item is { event: NostrEvent; archive: WeekArchive } => item !== null);
+    return candidates.reduce<(typeof candidates)[number] | null>((earliest, item) => !earliest || item.event.created_at < earliest.event.created_at || item.event.created_at === earliest.event.created_at && item.event.id < earliest.event.id ? item : earliest, null);
+  }
+
+  async refreshWeekArchive(slot: ProvisionedWeek): Promise<{ event: NostrEvent; archive: WeekArchive } | null> {
+    await this.queryRaw(DEFAULT_RELAYS, { kinds: [WEEK_ARCHIVE_KIND], authors: [slot.captain_pubkey], "#d": [`captains-cabin:archive:${slot.cohort_id}:${slot.week_number}`], limit: 20 });
+    return this.weekArchive(slot);
   }
 
   entriesForSession(address: string): ParsedEntry[] {

@@ -7,7 +7,18 @@ import {
   QUESTIONS_MS,
 } from "../config/relays.js";
 import { COHORT_MANIFEST } from "../config/cohort.js";
-import { parseCohortManifest, weekForCaptain, type ProvisionedWeek } from "../domain/cohort.js";
+import { deriveProvisionedWeeks, parseCohortManifest, weekForCaptain, type ProvisionedWeek } from "../domain/cohort.js";
+import {
+  cloneWeekConfiguration,
+  configurationForArchive,
+  proposalFieldAnswers,
+  proposalIdFor,
+  publicScheduleProjection,
+  scheduleWarnings,
+  type PrivateProposal,
+  type PrivateSchedule,
+  type WeekArchive,
+} from "../domain/cabin.js";
 import {
   addActivity,
   addProposalField,
@@ -51,9 +62,14 @@ import {
   validRelayUrl,
 } from "../domain/utils.js";
 import { decodeNpub, npubEncode } from "../nostr/bech32.js";
+import { getPublicKey } from "../nostr/crypto.js";
 import {
   buildEntryEvent,
+  buildPrivateProposalEvents,
+  buildPrivateScheduleEvent,
+  buildPublicScheduleEvent,
   buildSessionEvent,
+  buildWeekArchiveEvent,
   buildWeekConfigurationEvent,
   createPresenterZapRequest,
 } from "../nostr/event-builders.js";
@@ -270,6 +286,14 @@ export class DemoDayApp {
   #weekResolved = new Set<string>();
   #weekLoadErrors = new Map<string, string>();
   #weekPublicationError: string | null = null;
+  #proposalInbox = new Map<string, Array<{ event: NostrEvent; inner: NostrEvent; proposal: PrivateProposal }>>();
+  #privateSchedules = new Map<string, { event: NostrEvent | null; inner: NostrEvent | null; schedule: PrivateSchedule }>();
+  #weekArchives = new Map<number, { event: NostrEvent; archive: WeekArchive }>();
+  #priorWeekConfigurations = new Map<number, WeekConfigurationV1>();
+  #cabinLoading = new Set<string>();
+  #cabinResolved = new Set<string>();
+  #publicCabinLoading = false;
+  #publicCabinResolved = false;
   #requestedProfiles = new Set<string>();
   #failedProfileLoads = new Set<string>();
   #sessionUnsubscribe: (() => void) | null = null;
@@ -487,11 +511,37 @@ export class DemoDayApp {
       </article>`;
     }).join("");
 
+    void this.#loadPublicCabin();
+    const publicWeeks = (() => {
+      const manifest = parseCohortManifest(COHORT_MANIFEST);
+      if (!manifest) return "";
+      const cards = deriveProvisionedWeeks(manifest).map((slot) => {
+        const publication = this.#repository.publicSchedule(slot)?.schedule ?? this.#repository.weekArchive(slot)?.archive.public_schedule;
+        if (!publication) return "";
+        const activities = publication.activities.map((activity) => `<article class="panel"><h3>${escapeHtml(activity.name)}</h3><p>${escapeHtml(activity.date)} · ${escapeHtml(activity.starts_at)}–${escapeHtml(activity.ends_at)} · ${escapeHtml(activity.location)}</p>${activity.sessions.map((session) => `<div class="week-editor-card"><strong>${escapeHtml(session.title)}</strong><p>${escapeHtml(session.presenter)} · ${escapeHtml(session.starts_at)}–${escapeHtml(session.ends_at)}</p>${session.description ? `<p>${escapeHtml(session.description)}</p>` : ""}</div>`).join("") || `<p>No published sessions.</p>`}</article>`).join("");
+        return `<section class="week-subsection"><span class="eyebrow">Published week ${slot.week_number}</span><h2>Public schedule</h2>${activities}</section>`;
+      }).join("");
+      return cards || (this.#publicCabinLoading ? `<section class="panel" aria-live="polite"><span class="spinner"></span> Loading public schedules…</section>` : "");
+    })();
     return `${activeSessionCount === 0 ? `<section class="hero">
       <h1>SOVEREIGN ENGINEERING<br>Demo Day</h1>
       <a class="button button-primary button-large" href="#/create">I AM THE CAPTAIN NOW</a>
     </section>` : ""}
-    <section class="card-grid">${cards || `<div class="empty-state compact"><h3>No active demo days found</h3><p>The app is listening on the ten fixed relays. You can start the first session.</p></div>`}</section>`;
+    <section class="card-grid">${cards || `<div class="empty-state compact"><h3>No active demo days found</h3><p>The app is listening on the ten fixed relays. You can start the first session.</p></div>`}</section>${publicWeeks}`;
+  }
+
+  async #loadPublicCabin(): Promise<void> {
+    if (this.#publicCabinLoading || this.#publicCabinResolved) return;
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    if (!manifest) return;
+    this.#publicCabinLoading = true;
+    try {
+      await Promise.all(deriveProvisionedWeeks(manifest).flatMap((slot) => [this.#repository.refreshPublicSchedule(slot), this.#repository.refreshWeekArchive(slot)]));
+    } finally {
+      this.#publicCabinLoading = false;
+      this.#publicCabinResolved = true;
+      this.requestRender();
+    }
   }
 
   #renderWeekConfiguration(): string {
@@ -500,8 +550,11 @@ export class DemoDayApp {
     if (!manifest || !identity) {
       return `<section class="panel" aria-live="polite"><span class="spinner"></span> Loading week configuration…</section>`;
     }
-    const slot = weekForCaptain(manifest, identity.public_key_hex);
-    if (!slot) return `<section class="panel"><h2>Week configuration</h2><p>This identity is not assigned a week to configure.</p></section>`;
+    const captainSlot = weekForCaptain(manifest, identity.public_key_hex);
+    const participantSlots = deriveProvisionedWeeks(manifest).filter((candidate) => candidate.participant_allowlist.includes(identity.public_key_hex));
+    const today = new Date().toISOString().slice(0, 10);
+    const slot = captainSlot ?? participantSlots.find((candidate) => candidate.start_date <= today && today <= candidate.end_date) ?? participantSlots[0] ?? null;
+    if (!slot) return `<section class="panel"><h2>Captain’s Cabin</h2><p>This signing identity is neither an assigned captain nor a whitelisted participant.</p><p><code>${escapeHtml(identity.npub)}</code></p></section>`;
     const persisted = this.#repository.getWeek(slot);
     const seed = persisted?.configuration ?? seedWeekConfiguration(slot, { theme: "Week ${slot.week_number}", public_description: "" });
     const scope = `week-${slot.week_number}`;
@@ -515,6 +568,14 @@ export class DemoDayApp {
     if (!this.#weekResolved.has(scope)) {
       void this.#refreshWeekConfiguration(slot);
       return `<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading week configuration…</section>`;
+    }
+    if (!persisted) return `<section class="panel"><h2>Captain’s Cabin</h2><p>The captain has not published this week yet.</p></section>`;
+    if (!captainSlot) {
+      return this.#renderProposalWorkspace(slot, persisted.event.id, persisted.configuration, identity.public_key_hex);
+    }
+    if (persisted.configuration.status === "completed") {
+      const publication = this.#repository.publicSchedule(slot)?.schedule ?? this.#repository.weekArchive(slot)?.archive.public_schedule;
+      return `<section class="narrow-page week-workspace"><span class="eyebrow">Archived week ${slot.week_number}</span><h1>${escapeHtml(persisted.configuration.theme)}</h1><section class="panel"><h2>Read-only archive</h2><p>${escapeHtml(persisted.configuration.public_description)}</p><p>This completed week cannot be changed.</p>${publication ? `<p>${publication.activities.reduce((count, item) => count + item.sessions.length, 0)} published sessions.</p>` : ""}</section></section>`;
     }
     if (!this.#weekDraftBaseEvents.has(scope)) this.#weekDraftBaseEvents.set(scope, persisted?.event.id ?? null);
     const draft = this.#weekDraft(scope, seed);
@@ -557,6 +618,7 @@ export class DemoDayApp {
     })() : "";
     const readinessItems = [["Week details", "week_details"], ["Tuesday activities", "tuesday_activities"], ["Wednesday activities", "wednesday_activities"], ["Proposal form", "proposal_form"], ["Demo Day timing", "demo_day_timing"]] as const;
     const status = draftChanged ? "Changes ready to publish" : persisted ? "Setup published — intake closed" : "Draft";
+    void this.#loadCabinData(slot, persisted.event.id, persisted.configuration, identity.secret_key_hex);
     return `<section class="narrow-page week-workspace"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>Week ${slot.week_number}</h1><p>${escapeHtml(slot.start_date)} – ${escapeHtml(slot.end_date)} · Atlantic/Madeira</p><p>Assigned captain: ${escapeHtml(captain.name)}</p><p class="week-status">${status}</p>${draftChanged ? `<p class="week-local-status" aria-live="polite">Changes saved locally</p>` : ""}
       ${confirmation}
       ${this.#weekPublicationError ? `<section class="notice notice-error week-notice" role="alert"><p>${escapeHtml(this.#weekPublicationError)}</p><button class="button button-secondary" data-action="retry-week-publication">Try again</button></section>` : ""}
@@ -565,7 +627,50 @@ export class DemoDayApp {
       <section class="week-subsection"><h2>Proposal form</h2>${fields || `<div class="empty-state compact"><h3>No proposal fields yet</h3><p>Add a field before publishing this week.</p></div>`}<button class="button button-secondary" data-action="add-week-field" data-week-scope="${escapeAttr(scope)}">Add field</button></section>
       <section class="week-subsection"><h2>Demo Day timing</h2><label class="field"><span>Presentation duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:presentation_minutes" value="${draft.presentation_minutes}" /></label><label class="field"><span>Question duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:question_minutes" value="${draft.question_minutes}" /></label><p>Demo Day timing: ${draft.presentation_minutes}:00 presentation + ${draft.question_minutes}:00 questions.</p></section>
       <section class="panel readiness-panel"><h2>Readiness</h2>${readinessItems.map(([label, key]) => readiness.sections[key].length ? `<button class="readiness-action needs-attention" data-action="focus-week-invalid" data-week-scope="${escapeAttr(scope)}" data-week-section="${key}"><strong>${escapeHtml(label)}:</strong> Needs attention</button>` : `<p class="ready"><strong>${escapeHtml(label)}:</strong> Ready</p>`).join("")} ${readiness.valid ? "" : "<p>This section needs attention. Complete the highlighted fields to publish this week.</p>"}<div class="form-actions"><button class="button button-secondary" data-action="preview-week" data-week-scope="${escapeAttr(scope)}">Preview week</button><button class="button button-primary" type="submit" ${readiness.valid ? "" : "disabled"}>${persisted ? "Publish changes" : "Create week"}</button></div></section></form>
+      ${this.#renderCaptainCabin(slot, persisted.event.id, persisted.configuration)}
     </section>`;
+  }
+
+  #renderProposalWorkspace(slot: ProvisionedWeek, configurationEventId: string, configuration: WeekConfigurationV1, participantPubkey: string): string {
+    const scope = `cabin-${slot.week_number}`;
+    const own = this.#proposalInbox.get(scope)?.find((item) => item.proposal.author_pubkey === participantPubkey)?.proposal;
+    const loading = this.#cabinLoading.has(scope);
+    const answers = own?.answers ?? {};
+    const fields = configuration.proposal_fields.map((item) => `<label class="field"><span>${escapeHtml(item.label)}${item.required ? " *" : ""}</span><textarea name="answer:${escapeAttr(item.id)}" maxlength="4000" rows="4" ${item.required ? "required" : ""}>${escapeHtml(answers[item.id] ?? "")}</textarea></label>`).join("");
+    return `<section class="narrow-page week-workspace"><span class="eyebrow">Week ${slot.week_number} proposal</span><h1>${escapeHtml(configuration.theme)}</h1><p>${escapeHtml(configuration.public_description)}</p><p>Private delivery to the assigned captain · Atlantic/Madeira</p>
+      ${loading ? `<section class="panel" aria-live="polite"><span class="spinner"></span> Loading your encrypted proposal…</section>` : ""}
+      ${configuration.intake_open && configuration.status === "active" ? `<form class="panel form-stack" data-form-action="submit-cabin-proposal" data-configuration-event-id="${escapeAttr(configurationEventId)}">${fields}<div class="form-actions"><button class="button button-primary" type="submit">${own ? "Update private proposal" : "Submit private proposal"}</button></div></form>` : `<section class="panel"><h2>Proposal intake is closed</h2><p>${own ? "Your latest encrypted proposal remains submitted." : "This week is not accepting proposals."}</p></section>`}
+    </section>`;
+  }
+
+  #renderCaptainCabin(slot: ProvisionedWeek, configurationEventId: string, configuration: WeekConfigurationV1): string {
+    const scope = `cabin-${slot.week_number}`;
+    const inbox = this.#proposalInbox.get(scope) ?? [];
+    const stored = this.#privateSchedules.get(scope);
+    const schedule = stored?.schedule ?? this.#newPrivateSchedule(slot, configurationEventId);
+    if (!stored) this.#privateSchedules.set(scope, { event: null, inner: null, schedule });
+    const decisions = new Map(schedule.decisions.map((item) => [item.proposal_id, item.decision]));
+    const labels = new Map(configuration.proposal_fields.map((item) => [item.id, item.label]));
+    const proposalCards = inbox.map(({ proposal }) => {
+      const decision = decisions.get(proposal.proposal_id) ?? "pending";
+      const placement = schedule.placements.find((item) => item.proposal_id === proposal.proposal_id);
+      const answers = Object.entries(proposal.answers).map(([id, answer]) => `<dt>${escapeHtml(labels.get(id) ?? id)}</dt><dd>${escapeHtml(answer)}</dd>`).join("");
+      const placementForm = decision === "accepted" ? `<form class="form-stack" data-form-action="save-cabin-placement" data-proposal-id="${escapeAttr(proposal.proposal_id)}"><label class="field"><span>Activity</span><select name="activity_id">${configuration.activities.map((item) => `<option value="${escapeAttr(item.id)}" ${placement?.activity_id === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label class="field"><span>Start</span><input type="time" name="starts_at" value="${escapeAttr(placement?.starts_at ?? configuration.activities[0]?.starts_at ?? "18:00")}" required /></label><label class="field"><span>End</span><input type="time" name="ends_at" value="${escapeAttr(placement?.ends_at ?? configuration.activities[0]?.ends_at ?? "19:00")}" required /></label><label class="field"><span>Public title</span><input name="public_title" maxlength="200" value="${escapeAttr(placement?.public_title ?? "")}" required /></label><label class="field"><span>Public presenter</span><input name="public_presenter" maxlength="160" value="${escapeAttr(placement?.public_presenter ?? "")}" required /></label><label class="field"><span>Public description</span><textarea name="public_description" maxlength="1000">${escapeHtml(placement?.public_description ?? "")}</textarea></label><button class="button button-secondary" type="submit">Place in private draft</button></form>` : "";
+      return `<article class="panel"><h3>Proposal ${escapeHtml(proposal.proposal_id)}</h3><dl>${answers}</dl><p>Decision: <strong>${escapeHtml(decision)}</strong></p><div class="form-actions"><button class="button button-primary" data-action="decide-cabin-proposal" data-proposal-id="${escapeAttr(proposal.proposal_id)}" data-decision="accepted">Accept</button><button class="button button-danger" data-action="decide-cabin-proposal" data-proposal-id="${escapeAttr(proposal.proposal_id)}" data-decision="rejected">Reject</button></div>${placementForm}</article>`;
+    }).join("");
+    const warnings = scheduleWarnings(schedule, configuration);
+    const reusableWeeks = [...new Set([...this.#weekArchives.keys(), ...this.#priorWeekConfigurations.keys()])].filter((week) => week !== slot.week_number).sort((a, b) => b - a);
+    const archives = reusableWeeks.map((week) => `<button class="button button-secondary" data-action="clone-cabin-week" data-source-week="${week}">Clone week ${week} configuration</button>`).join("");
+    return `<section class="week-subsection"><h2>Captain’s private workspace</h2><section class="panel"><h3>Proposal intake</h3><p>${configuration.intake_open ? "Open" : "Closed"}</p><button class="button button-primary" data-action="toggle-cabin-intake">${configuration.intake_open ? "Close intake" : "Open intake"}</button></section>
+      <h3>Private proposal inbox</h3><button class="button button-secondary" data-action="refresh-cabin-data">Refresh inbox</button>${this.#cabinLoading.has(scope) ? `<p><span class="spinner"></span> Decrypting…</p>` : proposalCards || `<p>No valid encrypted proposals.</p>`}
+      ${warnings.length ? `<section class="notice notice-info"><h3>Schedule warnings</h3><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></section>` : ""}
+      <div class="form-actions"><button class="button button-secondary" data-action="save-cabin-schedule">Save private schedule</button><button class="button button-primary" data-action="publish-cabin-schedule" ${stored?.inner ? "" : "disabled"}>Publish public schedule</button><button class="button button-danger" data-action="archive-cabin-week">Complete and archive week</button></div>
+      ${archives ? `<section class="panel"><h3>Reuse a prior week</h3><div class="form-actions">${archives}</div></section>` : ""}
+    </section>`;
+  }
+
+  #newPrivateSchedule(slot: ProvisionedWeek, configurationEventId: string): PrivateSchedule {
+    return { v: 1, type: "captains-cabin-private-schedule", draft_id: `draft-${slot.week_number}-${randomHex(8)}`, cohort_id: slot.cohort_id, week_number: slot.week_number, configuration_event_id: configurationEventId, base_event_id: null, decisions: [], placements: [], updated_at_ms: Date.now() };
   }
 
   #renderCreate(): string {
@@ -2019,6 +2124,15 @@ export class DemoDayApp {
       void this.#publishCurrentWeek();
       return;
     }
+    if (action === "submit-cabin-proposal") {
+      void this.#withBusy("Encrypting private proposal", () => this.#submitCabinProposal(data));
+      return;
+    }
+    if (action === "save-cabin-placement") {
+      const proposalId = form.dataset.proposalId;
+      if (proposalId) this.#saveCabinPlacement(proposalId, data);
+      return;
+    }
     if (action === "join-session") {
       void this.#withBusy("Joining demo day", () => this.#joinSession(data));
       return;
@@ -2089,6 +2203,149 @@ export class DemoDayApp {
           : "We couldn't publish this week. Check your Nostr connection and signing identity, then try again.";
       }
     });
+  }
+
+  async #loadCabinData(slot: ProvisionedWeek, configurationEventId: string, configuration: WeekConfigurationV1, secretKeyHex: string): Promise<void> {
+    const scope = `cabin-${slot.week_number}`;
+    const loadKey = `${scope}:${configurationEventId}:${getPublicKey(secretKeyHex)}`;
+    if (this.#cabinLoading.has(scope) || this.#cabinResolved.has(loadKey)) return;
+    this.#cabinLoading.add(scope);
+    try {
+      this.#proposalInbox.set(scope, await this.#repository.privateProposals({ slot, configuration, configurationEventId, recipientSecretKeyHex: secretKeyHex }));
+      if (getPublicKey(secretKeyHex) === slot.captain_pubkey) {
+        const stored = await this.#repository.privateSchedule(slot, secretKeyHex);
+        if (stored) this.#privateSchedules.set(scope, stored);
+        const manifest = parseCohortManifest(COHORT_MANIFEST);
+        if (manifest) for (const prior of deriveProvisionedWeeks(manifest).filter((item) => item.week_number < slot.week_number)) {
+          const [archive, priorWeek] = await Promise.all([this.#repository.refreshWeekArchive(prior), this.#repository.refreshWeek(prior)]);
+          if (archive) this.#weekArchives.set(prior.week_number, archive);
+          if (priorWeek) this.#priorWeekConfigurations.set(prior.week_number, priorWeek.configuration);
+        }
+      }
+    } catch (error) {
+      this.#notice = { kind: "error", text: error instanceof Error ? error.message : String(error) };
+    } finally {
+      this.#cabinLoading.delete(scope);
+      this.#cabinResolved.add(loadKey);
+      this.requestRender();
+    }
+  }
+
+  async #submitCabinProposal(data: FormData): Promise<void> {
+    const identity = loadIdentity();
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    if (!identity || !manifest) throw new Error("Signing identity is unavailable");
+    const slot = deriveProvisionedWeeks(manifest).find((item) => item.participant_allowlist.includes(identity.public_key_hex));
+    if (!slot) throw new Error("This identity is not whitelisted");
+    const latest = await this.#repository.refreshWeek(slot);
+    if (!latest || !latest.configuration.intake_open || latest.configuration.status !== "active") throw new Error("Proposal intake is closed");
+    const scope = `cabin-${slot.week_number}`;
+    const own = this.#proposalInbox.get(scope)?.find((item) => item.proposal.author_pubkey === identity.public_key_hex)?.proposal;
+    const answers = proposalFieldAnswers(latest.configuration.proposal_fields, Object.fromEntries(latest.configuration.proposal_fields.map((item) => [item.id, clampText(String(data.get(`answer:${item.id}`) ?? ""), 4_000)])));
+    const now = Date.now();
+    const proposal: PrivateProposal = { v: 1, type: "captains-cabin-proposal", proposal_id: own?.proposal_id ?? proposalIdFor(slot, identity.public_key_hex), cohort_id: slot.cohort_id, week_number: slot.week_number, configuration_event_id: latest.event.id, author_pubkey: identity.public_key_hex, answers, created_at_ms: own?.created_at_ms ?? now, updated_at_ms: now };
+    const events = await buildPrivateProposalEvents({ proposal, slot, configuration: latest.configuration, configurationEventId: latest.event.id, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(own ? Math.floor(own.updated_at_ms / 1_000) : undefined) });
+    await this.#repository.publish(events.captain);
+    this.#proposalInbox.set(scope, [{ event: events.captain, inner: events.inner, proposal }]);
+    this.#notice = { kind: "success", text: own ? "Private proposal updated." : "Private proposal submitted." };
+  }
+
+  #saveCabinPlacement(proposalId: string, data: FormData): void {
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    const identity = loadIdentity();
+    const slot = manifest && identity ? weekForCaptain(manifest, identity.public_key_hex) : null;
+    if (!slot) return;
+    const scope = `cabin-${slot.week_number}`;
+    const stored = this.#privateSchedules.get(scope);
+    if (!stored) return;
+    const placement = { id: `placement-${proposalId}`.slice(0, 64), proposal_id: proposalId, activity_id: String(data.get("activity_id") ?? ""), starts_at: String(data.get("starts_at") ?? ""), ends_at: String(data.get("ends_at") ?? ""), public_title: clampText(String(data.get("public_title") ?? ""), 200), public_presenter: clampText(String(data.get("public_presenter") ?? ""), 160), public_description: clampText(String(data.get("public_description") ?? ""), 1_000) };
+    stored.schedule = { ...stored.schedule, placements: [...stored.schedule.placements.filter((item) => item.proposal_id !== proposalId), placement], updated_at_ms: Date.now() };
+    this.#notice = { kind: "info", text: "Placement updated locally. Save the private schedule when ready." };
+    this.requestRender();
+  }
+
+  #captainCabinContext(): { identity: LocalIdentityV1; slot: ProvisionedWeek; week: NonNullable<ReturnType<NostrRepository["getWeek"]>>; scope: string } {
+    const identity = loadIdentity();
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    const slot = identity && manifest ? weekForCaptain(manifest, identity.public_key_hex) : null;
+    const week = slot ? this.#repository.getWeek(slot) : null;
+    if (!identity || !slot || !week) throw new Error("Captain week is unavailable");
+    return { identity, slot, week, scope: `cabin-${slot.week_number}` };
+  }
+
+  async #toggleCabinIntake(): Promise<void> {
+    const { identity, slot } = this.#captainCabinContext();
+    const latest = await this.#repository.refreshWeek(slot);
+    if (!latest || latest.configuration.status === "completed") throw new Error("Completed weeks are read-only");
+    const opening = !latest.configuration.intake_open;
+    const configuration = { ...latest.configuration, status: "active" as const, intake_open: opening, base_event_id: latest.event.id };
+    const event = await buildWeekConfigurationEvent({ slot, configuration, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(latest.event.created_at) });
+    await this.#repository.publish(event);
+    this.#weekDrafts.set(`week-${slot.week_number}`, structuredClone(configuration));
+    this.#weekDraftBaseEvents.set(`week-${slot.week_number}`, event.id);
+    this.#notice = { kind: "success", text: opening ? "Proposal intake opened." : "Proposal intake closed." };
+  }
+
+  #decideCabinProposal(proposalId: string, decision: "accepted" | "rejected"): void {
+    const { scope, week } = this.#captainCabinContext();
+    const stored = this.#privateSchedules.get(scope) ?? { event: null, inner: null, schedule: this.#newPrivateSchedule(this.#captainCabinContext().slot, week.event.id) };
+    stored.schedule = { ...stored.schedule, decisions: [...stored.schedule.decisions.filter((item) => item.proposal_id !== proposalId), { proposal_id: proposalId, decision }], placements: decision === "rejected" ? stored.schedule.placements.filter((item) => item.proposal_id !== proposalId) : stored.schedule.placements, updated_at_ms: Date.now() };
+    this.#privateSchedules.set(scope, stored);
+    this.requestRender();
+  }
+
+  async #saveCabinSchedule(): Promise<void> {
+    const { identity, slot, week, scope } = this.#captainCabinContext();
+    const stored = this.#privateSchedules.get(scope);
+    if (!stored) throw new Error("Private schedule is unavailable");
+    const latest = await this.#repository.refreshWeek(slot);
+    if (!latest || latest.event.id !== week.event.id || stored.schedule.configuration_event_id !== latest.event.id) throw new Error("Week configuration changed. Reload the schedule before saving.");
+    const schedule = { ...stored.schedule, base_event_id: stored.inner?.id ?? null, updated_at_ms: Date.now() };
+    const built = await buildPrivateScheduleEvent({ schedule, slot, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(stored.inner?.created_at) });
+    await this.#repository.publish(built.wrap);
+    this.#privateSchedules.set(scope, { event: built.wrap, inner: built.inner, schedule });
+    this.#notice = { kind: "success", text: "Private schedule saved. Nothing public changed." };
+  }
+
+  async #publishCabinSchedule(): Promise<void> {
+    const { identity, slot, week, scope } = this.#captainCabinContext();
+    const stored = this.#privateSchedules.get(scope);
+    if (!stored?.inner) throw new Error("Save the private schedule before publishing");
+    const latest = await this.#repository.refreshWeek(slot);
+    if (!latest || latest.event.id !== week.event.id || stored.schedule.configuration_event_id !== latest.event.id) throw new Error("Week configuration changed. Save a fresh private schedule first.");
+    const publication = publicScheduleProjection(stored.schedule, latest.configuration, stored.inner.id, `publication-${slot.week_number}-${randomHex(8)}`, Date.now());
+    const event = await buildPublicScheduleEvent({ schedule: publication, slot, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(this.#repository.publicSchedule(slot)?.event.created_at) });
+    await this.#repository.publish(event);
+    this.#notice = { kind: "success", text: "Public schedule published deliberately." };
+  }
+
+  async #archiveCabinWeek(): Promise<void> {
+    const { identity, slot } = this.#captainCabinContext();
+    if (await this.#repository.refreshWeekArchive(slot)) throw new Error("This week is already archived and read-only");
+    const latest = await this.#repository.refreshWeek(slot);
+    if (!latest) throw new Error("Week configuration is unavailable");
+    const completed = { ...latest.configuration, status: "completed" as const, intake_open: false, base_event_id: latest.event.id };
+    const completionEvent = await buildWeekConfigurationEvent({ slot, configuration: completed, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(latest.event.created_at) });
+    await this.#repository.publish(completionEvent);
+    const publication = await this.#repository.refreshPublicSchedule(slot);
+    const archive: WeekArchive = { v: 1, type: "captains-cabin-week-archive", archive_id: `archive-${slot.week_number}-${randomHex(8)}`, cohort_id: slot.cohort_id, week_number: slot.week_number, configuration_event_id: completionEvent.id, public_schedule_event_id: publication?.event.id ?? null, completed_at_ms: Date.now(), configuration: configurationForArchive(completed), public_schedule: publication?.schedule ?? null };
+    const event = await buildWeekArchiveEvent({ archive, slot, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(completionEvent.created_at) });
+    await this.#repository.publish(event);
+    this.#weekArchives.set(slot.week_number, { event, archive });
+    this.#notice = { kind: "success", text: "Week completed and archived read-only." };
+  }
+
+  #cloneCabinWeek(sourceWeek: number): void {
+    const { slot, scope } = this.#captainCabinContext();
+    const source = this.#weekArchives.get(sourceWeek)?.archive.configuration ?? this.#priorWeekConfigurations.get(sourceWeek);
+    if (!source) throw new Error("Archived configuration is unavailable");
+    const completeSource = { ...source, status: "completed" as const, intake_open: false, base_event_id: null };
+    const clone = cloneWeekConfiguration(completeSource, slot, () => randomHex(8));
+    this.#weekDrafts.set(`week-${slot.week_number}`, clone);
+    this.#weekDraftBaseEvents.set(`week-${slot.week_number}`, this.#repository.getWeek(slot)?.event.id ?? null);
+    this.#privateSchedules.delete(scope);
+    this.#notice = { kind: "info", text: `Week ${sourceWeek} configuration cloned locally with fresh IDs. Review and publish when ready.` };
+    this.requestRender();
   }
 
   async #publishWeek(): Promise<void> {
@@ -2303,6 +2560,44 @@ export class DemoDayApp {
   #handleWeekAction(action: string, element: HTMLElement): boolean {
     const scope = element.dataset.weekScope;
     const draft = scope ? this.#weekDrafts.get(scope) : null;
+    if (action === "toggle-cabin-intake") {
+      void this.#withBusy("Updating proposal intake", () => this.#toggleCabinIntake());
+      return true;
+    }
+    if (action === "refresh-cabin-data") {
+      const manifest = parseCohortManifest(COHORT_MANIFEST);
+      const identity = loadIdentity();
+      const slot = manifest && identity ? weekForCaptain(manifest, identity.public_key_hex) : null;
+      if (slot) {
+        const prefix = `cabin-${slot.week_number}:`;
+        for (const key of this.#cabinResolved) if (key.startsWith(prefix)) this.#cabinResolved.delete(key);
+        this.requestRender();
+      }
+      return true;
+    }
+    if (action === "decide-cabin-proposal") {
+      const proposalId = element.dataset.proposalId;
+      const decision = element.dataset.decision;
+      if (proposalId && (decision === "accepted" || decision === "rejected")) this.#decideCabinProposal(proposalId, decision);
+      return true;
+    }
+    if (action === "save-cabin-schedule") {
+      void this.#withBusy("Saving private schedule", () => this.#saveCabinSchedule());
+      return true;
+    }
+    if (action === "publish-cabin-schedule") {
+      void this.#withBusy("Publishing public schedule", () => this.#publishCabinSchedule());
+      return true;
+    }
+    if (action === "archive-cabin-week") {
+      void this.#withBusy("Archiving completed week", () => this.#archiveCabinWeek());
+      return true;
+    }
+    if (action === "clone-cabin-week") {
+      const sourceWeek = Number(element.dataset.sourceWeek);
+      if (Number.isInteger(sourceWeek)) this.#cloneCabinWeek(sourceWeek);
+      return true;
+    }
     if (action === "retry-week-configuration") {
       const manifest = parseCohortManifest(COHORT_MANIFEST);
       const identity = loadIdentity();

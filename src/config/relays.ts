@@ -6,6 +6,7 @@ export const ZAP_RECEIPT_KIND = 9735;
 export const PRIVATE_PROPOSAL_KIND = 30079;
 export const PRIVATE_SCHEDULE_KIND = 30080;
 export const GIFT_WRAP_KIND = 1059;
+export const WEEK_ARCHIVE_KIND = 1063;
 
 export const PRESENTATION_MS = 6 * 60 * 1000;
 export const QUESTIONS_MS = 2 * 60 * 1000;

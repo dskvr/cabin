@@ -6,9 +6,22 @@ import {
   finalizeEvent,
   generateSecretKeyHex,
   getPublicKey,
+  nip44Decrypt,
+  nip44Encrypt,
   sha256,
   verifyEvent,
 } from "../dist/assets/nostr/crypto.js";
+import {
+  cloneWeekConfiguration,
+  configurationForArchive,
+  parsePrivateProposal,
+  parsePrivateSchedule,
+  parsePublicSchedule,
+  publicScheduleProjection,
+  proposalIdFor,
+  scheduleWarnings,
+  validateProposalForWeek,
+} from "../dist/assets/domain/cabin.js";
 import {
   decodeLnurl,
   decodeNaddr,
@@ -118,6 +131,85 @@ test("SHA-256 works when SubtleCrypto is unavailable on an insecure LAN origin",
   } finally {
     if (cryptoDescriptor) Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
   }
+});
+
+test("NIP-44 encryption matches the official vector and authenticates before decrypting", async () => {
+  const nonce = Uint8Array.from({ length: 32 }, (_, index) => index === 31 ? 1 : 0);
+  const expected = "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABee0G5VSK0/9YypIObAtDKfYEAjD35uVkHyB0F4DwrcNaCXlCWZKaArsGrY6M9wnuTMxWfp1RTN9Xga8no+kF5Vsb";
+  const encrypted = await nip44Encrypt("a", key(1), getPublicKey(key(2)), nonce);
+  assert.equal(encrypted, expected);
+  assert.equal(await nip44Decrypt(encrypted, key(2), getPublicKey(key(1))), "a");
+  const tampered = encrypted.slice(0, -2) + (encrypted.at(-2) === "A" ? "B" : "A") + encrypted.at(-1);
+  await assert.rejects(nip44Decrypt(tampered, key(2), getPublicKey(key(1))), /authentication|base64/);
+  await assert.rejects(nip44Decrypt("A".repeat(65_537), key(2), getPublicKey(key(1))), /length/);
+});
+
+test("private proposal validation binds author, whitelist, active week, revision, and stable field IDs", () => {
+  const author = getPublicKey(key(12));
+  const slot = { cohort_id: "madeira-2026", week_number: 2, start_date: "2026-08-18", end_date: "2026-08-24", timezone: "Atlantic/Madeira", captain_pubkey: getPublicKey(key(11)), participant_allowlist: [author] };
+  const configuration = { ...seedWeekConfiguration(slot, { theme: "Privacy", public_description: "Private proposals." }), status: "active", intake_open: true };
+  const proposal = {
+    v: 1, type: "captains-cabin-proposal", proposal_id: proposalIdFor(slot, author), cohort_id: slot.cohort_id,
+    week_number: slot.week_number, configuration_event_id: "ab".repeat(32), author_pubkey: author,
+    answers: Object.fromEntries(configuration.proposal_fields.map((field) => [field.id, "Answer"])),
+    created_at_ms: 1000, updated_at_ms: 1000,
+  };
+  assert.ok(parsePrivateProposal(proposal));
+  assert.deepEqual(validateProposalForWeek(proposal, author, slot, configuration, proposal.configuration_event_id), []);
+  assert.match(validateProposalForWeek(proposal, getPublicKey(key(13)), slot, configuration, proposal.configuration_event_id).join(" "), /author|whitelisted/);
+  assert.match(validateProposalForWeek({ ...proposal, answers: { unknown: "leak" } }, author, slot, configuration, proposal.configuration_event_id).join(" "), /unknown|required/);
+  assert.match(validateProposalForWeek(proposal, author, slot, { ...configuration, intake_open: false }, proposal.configuration_event_id).join(" "), /closed/);
+  assert.match(validateProposalForWeek(proposal, author, slot, configuration, "cd".repeat(32)).join(" "), /stale/);
+});
+
+test("private schedule warnings and public projection preserve an exact privacy boundary", () => {
+  const slot = { cohort_id: "madeira-2026", week_number: 2, start_date: "2026-08-18", end_date: "2026-08-24", timezone: "Atlantic/Madeira", captain_pubkey: getPublicKey(key(14)), participant_allowlist: [] };
+  const configuration = { ...seedWeekConfiguration(slot, { theme: "Schedule", public_description: "A public schedule." }), status: "active", intake_open: false };
+  const activity = configuration.activities[0];
+  assert.ok(activity);
+  const schedule = {
+    v: 1, type: "captains-cabin-private-schedule", draft_id: "draft-one", cohort_id: slot.cohort_id,
+    week_number: slot.week_number, configuration_event_id: "01".repeat(32), base_event_id: null,
+    decisions: [{ proposal_id: "proposal-one", decision: "accepted" }, { proposal_id: "proposal-two", decision: "rejected" }],
+    placements: [
+      { id: "placement-one", proposal_id: "proposal-one", activity_id: activity.id, starts_at: "17:30", ends_at: "18:30", public_title: "Selected title", public_presenter: "Alice", public_description: "Approved copy" },
+      { id: "placement-two", proposal_id: "proposal-one", activity_id: activity.id, starts_at: "18:15", ends_at: "18:45", public_title: "Second", public_presenter: "Alice", public_description: "" },
+      { id: "placement-three", proposal_id: "proposal-two", activity_id: activity.id, starts_at: "19:00", ends_at: "19:30", public_title: "Rejected", public_presenter: "Mallory", public_description: "private answer" },
+    ], updated_at_ms: 10,
+  };
+  assert.ok(parsePrivateSchedule(schedule));
+  const warnings = scheduleWarnings(schedule, configuration).join(" ");
+  assert.match(warnings, /outside/);
+  assert.match(warnings, /more than once/);
+  assert.match(warnings, /overlaps/);
+  assert.match(warnings, /not accepted/);
+  const projection = publicScheduleProjection(schedule, configuration, "02".repeat(32), "publication-one", 20);
+  const serialized = JSON.stringify(projection);
+  assert.match(serialized, /Selected title/);
+  assert.doesNotMatch(serialized, /Rejected|private answer|proposal-one|proposal-two|decisions|answers/);
+  assert.equal(projection.activities.flatMap((item) => item.sessions).length, 2);
+  assert.deepEqual(parsePublicSchedule(projection), projection);
+  assert.equal(parsePublicSchedule({ ...projection, answers: { secret: "leak" } }), null, "public payloads reject extra top-level keys");
+  assert.equal(parsePublicSchedule({ ...projection, activities: [{ ...projection.activities[0], sessions: [{ ...projection.activities[0].sessions[0], proposal_id: "private" }] }] }), null, "public sessions reject private coordinates");
+});
+
+test("configuration cloning creates fresh structural IDs and copies no operational state", () => {
+  const sourceSlot = { cohort_id: "madeira-2026", week_number: 1, start_date: "2026-08-12", end_date: "2026-08-18", timezone: "Atlantic/Madeira", captain_pubkey: getPublicKey(key(15)), participant_allowlist: [] };
+  const targetSlot = { ...sourceSlot, week_number: 4, start_date: "2026-09-02", end_date: "2026-09-08", captain_pubkey: getPublicKey(key(16)) };
+  const source = { ...seedWeekConfiguration(sourceSlot, { theme: "Reusable", public_description: "Configuration only." }), status: "completed", intake_open: false, base_event_id: "03".repeat(32) };
+  let sequence = 0;
+  const clone = cloneWeekConfiguration(source, targetSlot, () => `fresh${++sequence}`);
+  assert.equal(clone.status, "setup");
+  assert.equal(clone.intake_open, false);
+  assert.equal(clone.base_event_id, null);
+  assert.equal(clone.week_number, 4);
+  assert.deepEqual(clone.activities.map((item) => item.name), source.activities.map((item) => item.name));
+  assert.equal(clone.activities.some((item) => source.activities.some((old) => old.id === item.id)), false);
+  assert.equal(clone.proposal_fields.some((item) => source.proposal_fields.some((old) => old.id === item.id)), false);
+  const archived = configurationForArchive(source);
+  assert.equal("base_event_id" in archived, false);
+  assert.equal("status" in archived, false);
+  assert.equal("intake_open" in archived, false);
 });
 
 function sessionState(overrides = {}) {
