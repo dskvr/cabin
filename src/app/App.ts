@@ -8,7 +8,20 @@ import {
 } from "../config/relays.js";
 import { COHORT_MANIFEST } from "../config/cohort.js";
 import { parseCohortManifest, weekForCaptain } from "../domain/cohort.js";
-import { parseWeekConfiguration, seedWeekConfiguration } from "../domain/week.js";
+import {
+  addActivity,
+  addProposalField,
+  moveActivity,
+  moveProposalField,
+  parseWeekConfiguration,
+  removeActivity,
+  removeProposalField,
+  seedWeekConfiguration,
+  updateActivity,
+  updateProposalField,
+  validateWeekConfiguration,
+  type WeekConfigurationV1,
+} from "../domain/week.js";
 import { calculateElo, rankElo } from "../domain/elo.js";
 import { buildExport, downloadJson, exportFilename } from "../domain/export.js";
 import { calculateFollowSuggestions } from "../domain/follows.js";
@@ -222,6 +235,9 @@ export class DemoDayApp {
   #profileSearchTimer: number | null = null;
   #profileSearchSequence = 0;
   #drafts = new Map<string, string>();
+  #weekDrafts = new Map<string, WeekConfigurationV1>();
+  #weekExpanded = new Set<string>();
+  #weekRemoval: { scope: string; kind: "activity" | "field"; id: string } | null = null;
   #weekDraftBaseEvents = new Map<string, string | null>();
   #requestedProfiles = new Set<string>();
   #sessionUnsubscribe: (() => void) | null = null;
@@ -457,15 +473,44 @@ export class DemoDayApp {
     const seed = persisted?.configuration ?? seedWeekConfiguration(slot, { theme: "Week ${slot.week_number}", public_description: "" });
     const scope = `week-${slot.week_number}`;
     if (!this.#weekDraftBaseEvents.has(scope)) this.#weekDraftBaseEvents.set(scope, persisted?.event.id ?? null);
-    const theme = this.#draft(scope, "theme", seed.theme);
-    const description = this.#draft(scope, "public_description", seed.public_description);
-    return `<section class="narrow-page"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>${persisted ? "Update week configuration" : "Configure your week"}</h1>
-      <form class="panel form-stack" data-form-action="publish-week" data-draft-scope="${escapeAttr(scope)}">
-        ${field({ label: "Theme", name: "theme", value: theme, required: true, maxlength: 120 })}
-        ${textarea({ label: "Public description", name: "public_description", value: description, required: true, maxlength: 4000, rows: 4 })}
-        <p>Intake remains closed until a later phase enables it.</p>
-        <div class="form-actions"><button class="button button-primary" type="submit">${persisted ? "Publish changes" : "Create week"}</button></div>
-      </form>
+    const draft = this.#weekDraft(scope, seed);
+    const readiness = validateWeekConfiguration(draft);
+    const group = (day: "tuesday" | "wednesday", heading: string) => {
+      const activities = draft.activities.filter((item) => item.day === day);
+      const errors = readiness.sections[`${day}_activities`];
+      const cards = activities.map((activity, index) => {
+        const expanded = this.#weekExpanded.has(activity.id) || errors.length > 0;
+        return `<article class="week-editor-card" data-week-card="${escapeAttr(activity.id)}"><header><button class="card-toggle" data-action="toggle-week-card" data-card-id="${escapeAttr(activity.id)}" aria-expanded="${expanded}">${index + 1}. ${escapeHtml(activity.name || "Untitled activity")} · ${escapeHtml(activity.date)} · ${escapeHtml(activity.starts_at)}–${escapeHtml(activity.ends_at)} · ${escapeHtml(activity.location)}</button></header>
+          ${expanded ? `<div class="form-stack card-body">
+            <label class="field"><span>Title *</span><input data-week-field="activity:name" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.name)}" maxlength="160" /></label>
+            <label class="field"><span>Date *</span><input type="date" data-week-field="activity:date" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.date)}" /></label>
+            <label class="field"><span>Start time *</span><input type="time" data-week-field="activity:starts_at" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.starts_at)}" /></label>
+            <label class="field"><span>End time *</span><input type="time" data-week-field="activity:ends_at" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.ends_at)}" /></label>
+            <label class="field"><span>Location *</span><input data-week-field="activity:location" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.location)}" maxlength="240" /></label>
+            <label class="field"><span>Link — optional</span><input type="url" data-week-field="activity:link" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.link ?? "")}" /><small>Times use Atlantic/Madeira.</small></label>
+          </div>` : ""}
+          <div class="card-actions"><button class="button button-secondary" data-action="move-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}" data-direction="-1" ${index === 0 ? "disabled" : ""}>Move earlier</button><button class="button button-secondary" data-action="move-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}" data-direction="1" ${index === activities.length - 1 ? "disabled" : ""}>Move later</button><button class="button button-danger" data-action="request-remove-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}">Remove activity</button></div></article>`;
+      }).join("");
+      return `<section class="week-subsection"><h3>${heading}</h3>${cards || `<div class="empty-state compact"><h4>No activities scheduled</h4><p>Add an activity to this day to continue.</p></div>`}<button class="button button-secondary" data-action="add-week-activity" data-week-scope="${escapeAttr(scope)}" data-day="${day}">Add activity</button></section>`;
+    };
+    const fields = draft.proposal_fields.map((proposalField, index) => {
+      const expanded = this.#weekExpanded.has(proposalField.id) || readiness.sections.proposal_form.length > 0;
+      return `<article class="week-editor-card"><header><button class="card-toggle" data-action="toggle-week-card" data-card-id="${escapeAttr(proposalField.id)}" aria-expanded="${expanded}">${index + 1}. ${escapeHtml(proposalField.label || "Untitled field")}${proposalField.required ? " *" : ""}</button></header>${expanded ? `<div class="form-stack card-body"><label class="field"><span>Field label *</span><input data-week-field="field:label" data-week-id="${escapeAttr(proposalField.id)}" value="${escapeAttr(proposalField.label)}" maxlength="160" /></label><label class="field checkbox-field"><input type="checkbox" data-week-field="field:required" data-week-id="${escapeAttr(proposalField.id)}" ${proposalField.required ? "checked" : ""} /> <span>Required for proposals</span></label></div>` : ""}<div class="card-actions"><button class="button button-secondary" data-action="move-week-field" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(proposalField.id)}" data-direction="-1" ${index === 0 ? "disabled" : ""}>Move earlier</button><button class="button button-secondary" data-action="move-week-field" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(proposalField.id)}" data-direction="1" ${index === draft.proposal_fields.length - 1 ? "disabled" : ""}>Move later</button><button class="button button-danger" data-action="request-remove-week-field" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(proposalField.id)}">Remove field</button></div></article>`;
+    }).join("");
+    const confirmation = this.#weekRemoval && this.#weekRemoval.scope === scope ? (() => {
+      const item = this.#weekRemoval.kind === "activity" ? draft.activities.find((entry) => entry.id === this.#weekRemoval?.id) : draft.proposal_fields.find((entry) => entry.id === this.#weekRemoval?.id);
+      const title = item ? ("name" in item ? item.name : item.label) : "this item";
+      const removeLabel = this.#weekRemoval.kind === "activity" ? "Remove activity" : "Remove field";
+      return `<section class="panel destructive-confirmation" role="dialog" aria-modal="true"><h2>Remove from draft?</h2><p>Remove “${escapeHtml(title)}” from this unpublished draft?</p><div class="form-actions"><button class="button button-secondary" data-action="cancel-week-removal">Cancel</button><button class="button button-danger" data-action="confirm-week-removal">${removeLabel}</button></div></section>`;
+    })() : "";
+    const readinessItems = [["Week details", "week_details"], ["Tuesday activities", "tuesday_activities"], ["Wednesday activities", "wednesday_activities"], ["Proposal form", "proposal_form"], ["Demo Day timing", "demo_day_timing"]] as const;
+    return `<section class="narrow-page week-workspace"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>Week ${slot.week_number}</h1><p>Atlantic/Madeira · ${persisted ? "Changes ready to publish" : "Draft"}</p>
+      ${confirmation}
+      <form class="panel form-stack" data-form-action="publish-week" data-draft-scope="${escapeAttr(scope)}"><h2>Week details</h2><label class="field"><span>Theme *</span><input name="theme" data-week-field="config:theme" value="${escapeAttr(draft.theme)}" maxlength="120" /></label><label class="field"><span>Public description *</span><textarea name="public_description" data-week-field="config:public_description" maxlength="4000" rows="4">${escapeHtml(draft.public_description)}</textarea></label>
+      <section class="week-subsection"><h2>Activities</h2>${group("tuesday", "Tuesday talks")}${group("wednesday", "Wednesday workshops")}</section>
+      <section class="week-subsection"><h2>Proposal form</h2>${fields || `<div class="empty-state compact"><h3>No proposal fields yet</h3><p>Add a field before publishing this week.</p></div>`}<button class="button button-secondary" data-action="add-week-field" data-week-scope="${escapeAttr(scope)}">Add field</button></section>
+      <section class="week-subsection"><h2>Demo Day timing</h2><label class="field"><span>Presentation duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:presentation_minutes" value="${draft.presentation_minutes}" /></label><label class="field"><span>Question duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:question_minutes" value="${draft.question_minutes}" /></label><p>Demo Day timing: ${draft.presentation_minutes}:00 presentation + ${draft.question_minutes}:00 questions.</p></section>
+      <section class="panel readiness-panel"><h2>Readiness</h2>${readinessItems.map(([label, key]) => `<p class="${readiness.sections[key].length ? "needs-attention" : "ready"}"><strong>${escapeHtml(label)}:</strong> ${readiness.sections[key].length ? "Needs attention" : "Ready"}</p>`).join("")} ${readiness.valid ? "" : "<p>This section needs attention. Complete the highlighted fields to publish this week.</p>"}<div class="form-actions"><button class="button button-primary" type="submit" ${readiness.valid ? "" : "disabled"}>${persisted ? "Publish changes" : "Create week"}</button></div></section></form>
     </section>`;
   }
 
@@ -973,11 +1018,20 @@ export class DemoDayApp {
     return this.#drafts.get(`${scope}:${name}`) ?? fallback;
   }
 
+  #weekDraft(scope: string, seed: WeekConfigurationV1): WeekConfigurationV1 {
+    const existing = this.#weekDrafts.get(scope);
+    if (existing) return existing;
+    const draft = structuredClone(seed);
+    this.#weekDrafts.set(scope, draft);
+    return draft;
+  }
+
   #clearDraftScope(scope: string): void {
     for (const key of [...this.#drafts.keys()]) {
       if (key.startsWith(`${scope}:`)) this.#drafts.delete(key);
     }
     this.#weekDraftBaseEvents.delete(scope);
+    this.#weekDrafts.delete(scope);
   }
 
   #currentSelected(): SelectedSession | null {
@@ -1747,6 +1801,23 @@ export class DemoDayApp {
   readonly #onInput = (event: Event): void => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) return;
+    const weekField = target.dataset.weekField;
+    if (weekField) {
+      const scope = target.closest<HTMLElement>("[data-draft-scope]")?.dataset.draftScope;
+      const id = target.dataset.weekId;
+      const draft = scope ? this.#weekDrafts.get(scope) : null;
+      if (!draft) return;
+      const [kind, name] = weekField.split(":");
+      if (kind === "config" && name) {
+        const value = name.endsWith("_minutes") ? Number(target.value) : target.value;
+        this.#weekDrafts.set(scope!, { ...draft, [name]: value });
+      } else if (kind === "activity" && name && id) {
+        this.#weekDrafts.set(scope!, updateActivity(draft, id, { [name]: target.value }));
+      } else if (kind === "field" && name && id) {
+        this.#weekDrafts.set(scope!, updateProposalField(draft, id, { [name]: name === "required" && target instanceof HTMLInputElement ? target.checked : target.value }));
+      }
+      return;
+    }
     if (!target.name) return;
     const scope = target.dataset.draftScope ?? target.closest<HTMLFormElement>("form")?.dataset.draftScope;
     if (!scope) return;
@@ -1899,14 +1970,11 @@ export class DemoDayApp {
     if (baseEventId !== (latest?.event.id ?? null)) {
       throw new Error("This week changed elsewhere. Reload and reapply your draft before publishing.");
     }
-    const configuration = {
-      ...(latest?.configuration ?? seedWeekConfiguration(slot, { theme: "Week " + slot.week_number, public_description: "" })),
-      theme: String(formData.get("theme") ?? ""),
-      public_description: String(formData.get("public_description") ?? ""),
-      base_event_id: latest?.event.id ?? null,
-    };
+    const seeded = latest?.configuration ?? seedWeekConfiguration(slot, { theme: "Week " + slot.week_number, public_description: "" });
+    const draft = this.#weekDraft(scope, seeded);
+    const configuration = { ...draft, base_event_id: latest?.event.id ?? null };
     const valid = parseWeekConfiguration(configuration);
-    if (!valid) throw new Error("Enter a theme and public description within the allowed limits.");
+    if (!valid) throw new Error("Complete every required week configuration field before publishing.");
     const event = await buildWeekConfigurationEvent({
       slot, configuration: valid, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(latest?.event.created_at),
     });
@@ -1942,6 +2010,8 @@ export class DemoDayApp {
     if (!action) return;
     if (actionElement.tagName === "A") return;
     event.preventDefault();
+
+    if (this.#handleWeekAction(action, actionElement)) return;
 
     if (action === "toggle-theme") {
       this.#theme = this.#theme === "dark" ? "light" : "dark";
@@ -2082,6 +2152,58 @@ export class DemoDayApp {
       if (values.length) void this.#copyText(values.join("\n"), "Remaining npubs copied.");
     }
   };
+
+  #handleWeekAction(action: string, element: HTMLElement): boolean {
+    const scope = element.dataset.weekScope;
+    const draft = scope ? this.#weekDrafts.get(scope) : null;
+    if (action === "toggle-week-card") {
+      const id = element.dataset.cardId;
+      if (!id) return true;
+      if (this.#weekExpanded.has(id)) this.#weekExpanded.delete(id); else this.#weekExpanded.add(id);
+      this.requestRender();
+      return true;
+    }
+    if (action === "cancel-week-removal") {
+      this.#weekRemoval = null;
+      this.requestRender();
+      return true;
+    }
+    if (action === "confirm-week-removal") {
+      const removal = this.#weekRemoval;
+      const pendingDraft = removal ? this.#weekDrafts.get(removal.scope) : null;
+      if (removal && pendingDraft) this.#weekDrafts.set(removal.scope, removal.kind === "activity" ? removeActivity(pendingDraft, removal.id) : removeProposalField(pendingDraft, removal.id));
+      this.#weekRemoval = null;
+      this.requestRender();
+      return true;
+    }
+    if (!scope || !draft) return false;
+    if (action === "add-week-activity") {
+      const day = element.dataset.day === "wednesday" ? "wednesday" : "tuesday";
+      const next = addActivity(draft, day);
+      const added = next.activities.find((item) => !draft.activities.some((current) => current.id === item.id));
+      if (added) this.#weekExpanded.add(added.id);
+      this.#weekDrafts.set(scope, next);
+    } else if (action === "move-week-activity") {
+      const id = element.dataset.weekId;
+      if (id) this.#weekDrafts.set(scope, moveActivity(draft, id, element.dataset.direction === "-1" ? -1 : 1));
+    } else if (action === "request-remove-week-activity") {
+      const id = element.dataset.weekId;
+      if (id) this.#weekRemoval = { scope, kind: "activity", id };
+    } else if (action === "add-week-field") {
+      const next = addProposalField(draft);
+      const added = next.proposal_fields.find((item) => !draft.proposal_fields.some((current) => current.id === item.id));
+      if (added) this.#weekExpanded.add(added.id);
+      this.#weekDrafts.set(scope, next);
+    } else if (action === "move-week-field") {
+      const id = element.dataset.weekId;
+      if (id) this.#weekDrafts.set(scope, moveProposalField(draft, id, element.dataset.direction === "-1" ? -1 : 1));
+    } else if (action === "request-remove-week-field") {
+      const id = element.dataset.weekId;
+      if (id) this.#weekRemoval = { scope, kind: "field", id };
+    } else return false;
+    this.requestRender();
+    return true;
+  }
 
   readonly #onDragStart = (event: DragEvent): void => {
     const target = event.target;

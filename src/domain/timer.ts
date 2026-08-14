@@ -11,20 +11,33 @@ export interface FormattedTimer {
   className: "presentation" | "questions" | "overtime";
 }
 
-export function calculateTimer(elapsedMs: number): TimerState {
+export interface TimerDurations {
+  presentationMs?: number;
+  questionMs?: number;
+}
+
+function durations(input: TimerDurations = {}): Required<TimerDurations> {
+  return {
+    presentationMs: input.presentationMs ?? PRESENTATION_MS,
+    questionMs: input.questionMs ?? QUESTIONS_MS,
+  };
+}
+
+export function calculateTimer(elapsedMs: number, input: TimerDurations = {}): TimerState {
+  const { presentationMs, questionMs } = durations(input);
   const safeElapsed = Math.max(0, elapsedMs);
-  if (safeElapsed < PRESENTATION_MS) {
-    return { phase: "presentation", remainingMs: PRESENTATION_MS - safeElapsed };
+  if (safeElapsed < presentationMs) {
+    return { phase: "presentation", remainingMs: presentationMs - safeElapsed };
   }
-  if (safeElapsed < PRESENTATION_MS + QUESTIONS_MS) {
+  if (safeElapsed < presentationMs + questionMs) {
     return {
       phase: "questions",
-      remainingMs: PRESENTATION_MS + QUESTIONS_MS - safeElapsed,
+      remainingMs: presentationMs + questionMs - safeElapsed,
     };
   }
   return {
     phase: "overtime",
-    elapsedMs: safeElapsed - PRESENTATION_MS - QUESTIONS_MS,
+    elapsedMs: safeElapsed - presentationMs - questionMs,
   };
 }
 
@@ -39,8 +52,8 @@ export function formatClockSeconds(totalSeconds: number, prefix = ""): string {
   return `${prefix}${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-export function formatTimer(elapsedMs: number): FormattedTimer {
-  const state = calculateTimer(elapsedMs);
+export function formatTimer(elapsedMs: number, input: TimerDurations = {}): FormattedTimer {
+  const state = calculateTimer(elapsedMs, input);
   if (state.phase === "presentation") {
     return {
       phase: "PRESENTATION",
@@ -62,16 +75,17 @@ export function formatTimer(elapsedMs: number): FormattedTimer {
   };
 }
 
-export function splitPresentationTime(elapsedMs: number): {
+export function splitPresentationTime(elapsedMs: number, input: TimerDurations = {}): {
   presentation_ms: number;
   questions_ms: number;
   overtime_ms: number;
   total_ms: number;
 } {
+  const { presentationMs, questionMs } = durations(input);
   const total = Math.max(0, elapsedMs);
-  const presentation = Math.min(total, PRESENTATION_MS);
-  const questions = Math.min(Math.max(total - PRESENTATION_MS, 0), QUESTIONS_MS);
-  const overtime = Math.max(total - PRESENTATION_MS - QUESTIONS_MS, 0);
+  const presentation = Math.min(total, presentationMs);
+  const questions = Math.min(Math.max(total - presentationMs, 0), questionMs);
+  const overtime = Math.max(total - presentationMs - questionMs, 0);
   return {
     presentation_ms: presentation,
     questions_ms: questions,

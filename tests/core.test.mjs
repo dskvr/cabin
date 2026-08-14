@@ -34,6 +34,14 @@ import {
   formatTimer,
   splitPresentationTime,
 } from "../dist/assets/domain/timer.js";
+import {
+  addActivity,
+  moveActivity,
+  removeActivity,
+  seedWeekConfiguration,
+  updateActivity,
+  validateWeekConfiguration,
+} from "../dist/assets/domain/week.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
 import { calculateFollowSuggestions } from "../dist/assets/domain/follows.js";
 import {
@@ -564,4 +572,27 @@ test("AI-ready export includes normalized and raw data and never secret material
   assert.equal(containsSecretMaterial({ value: nsecEncode(key(1)) }), true);
   assert.equal(JSON.stringify(exported).includes("nsec"), false);
   assert.equal(exportFilename(new Date("2026-08-06T01:00:00.000Z")), "sovereign-engineering-demo-day-2026-08-06.json");
+});
+
+test("week activities retain stable identities, order, valid timing, and duration boundaries", () => {
+  const slot = { cohort_id: "madeira-2026", week_number: 3, start_date: "2026-01-13", end_date: "2026-01-19", captain_pubkey: key(90) };
+  const seeded = seedWeekConfiguration(slot, { theme: "Nostr in Madeira", public_description: "A complete week." });
+  const tuesday = seeded.activities.find((item) => item.day === "tuesday");
+  assert.ok(tuesday);
+  const added = addActivity(seeded, "tuesday");
+  const addedActivity = added.activities.at(1);
+  assert.ok(addedActivity);
+  assert.notEqual(addedActivity.id, tuesday.id);
+  assert.equal(moveActivity(added, tuesday.id, -1), added, "boundary move is a no-op");
+  const renamed = updateActivity(added, addedActivity.id, { name: "Relay workshop", link: "https://example.com/workshop" });
+  assert.equal(renamed.activities.at(1)?.id, addedActivity.id);
+  assert.equal(renamed.activities.at(1)?.link, "https://example.com/workshop");
+  const removed = removeActivity(renamed, addedActivity.id);
+  assert.equal(removeActivity(removed, "absent"), removed, "removing an absent ID is a no-op");
+  assert.equal(validateWeekConfiguration({ ...removed, presentation_minutes: 1, question_minutes: 2 }).valid, true);
+  assert.equal(validateWeekConfiguration({ ...removed, presentation_minutes: 0 }).valid, false);
+  assert.equal(validateWeekConfiguration({ ...removed, presentation_minutes: 181 }).valid, false);
+  assert.equal(validateWeekConfiguration({ ...removed, presentation_minutes: 1.5 }).valid, false);
+  assert.deepEqual(calculateTimer(60_000, { presentationMs: 60_000, questionMs: 120_000 }), { phase: "questions", remainingMs: 120_000 });
+  assert.deepEqual(splitPresentationTime(181_000, { presentationMs: 60_000, questionMs: 120_000 }), { presentation_ms: 60_000, questions_ms: 120_000, overtime_ms: 1_000, total_ms: 181_000 });
 });
