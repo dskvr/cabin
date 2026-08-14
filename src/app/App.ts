@@ -2164,16 +2164,25 @@ export class DemoDayApp {
       return true;
     }
     if (action === "cancel-week-removal") {
+      const removal = this.#weekRemoval;
       this.#weekRemoval = null;
       this.requestRender();
+      if (removal) this.#focusWeekAction(`request-remove-week-${removal.kind}`, removal.id);
       return true;
     }
     if (action === "confirm-week-removal") {
       const removal = this.#weekRemoval;
       const pendingDraft = removal ? this.#weekDrafts.get(removal.scope) : null;
-      if (removal && pendingDraft) this.#weekDrafts.set(removal.scope, removal.kind === "activity" ? removeActivity(pendingDraft, removal.id) : removeProposalField(pendingDraft, removal.id));
+      let nextId = "";
+      if (removal && pendingDraft) {
+        const items = removal.kind === "activity" ? pendingDraft.activities.filter((item) => item.day === pendingDraft.activities.find((candidate) => candidate.id === removal.id)?.day) : pendingDraft.proposal_fields;
+        const index = items.findIndex((item) => item.id === removal.id);
+        nextId = items[index + 1]?.id ?? items[index - 1]?.id ?? "";
+        this.#weekDrafts.set(removal.scope, removal.kind === "activity" ? removeActivity(pendingDraft, removal.id) : removeProposalField(pendingDraft, removal.id));
+      }
       this.#weekRemoval = null;
       this.requestRender();
+      if (removal) this.#focusWeekAction(nextId ? (removal.kind === "activity" ? "move-week-activity" : "move-week-field") : (removal.kind === "activity" ? "add-week-activity" : "add-week-field"), nextId, removal.scope);
       return true;
     }
     if (!scope || !draft) return false;
@@ -2203,6 +2212,15 @@ export class DemoDayApp {
     } else return false;
     this.requestRender();
     return true;
+  }
+
+  #focusWeekAction(action: string, id = "", scope = ""): void {
+    queueMicrotask(() => {
+      const selectors = [`[data-action="${CSS.escape(action)}"]`];
+      if (id) selectors.push(`[data-week-id="${CSS.escape(id)}"]`);
+      if (scope) selectors.push(`[data-week-scope="${CSS.escape(scope)}"]`);
+      this.#root.querySelector<HTMLElement>(selectors.join(""))?.focus({ preventScroll: true });
+    });
   }
 
   readonly #onDragStart = (event: DragEvent): void => {
