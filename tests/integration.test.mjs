@@ -28,6 +28,20 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
   assert.fail(message);
 }
 
+class CountingTransport extends InMemoryTestTransport {
+  publishCalls = 0;
+  rejectNextPublish = false;
+
+  async publish(relays, event, options) {
+    this.publishCalls += 1;
+    if (this.rejectNextPublish) {
+      this.rejectNextPublish = false;
+      throw new Error("relay unavailable");
+    }
+    return super.publish(relays, event, options);
+  }
+}
+
 function makeState(overrides = {}) {
   return {
     v: 1,
@@ -141,6 +155,95 @@ test("week configuration rejects invalid boundaries and detects a stale revision
   assert.equal(initial.base_event_id, null, "a stale local draft retains its original base rather than adopting the remote revision");
 });
 
+test("repository retains the latest accepted week when hostile replacements arrive", async () => {
+  const captainSecret = key(98);
+  const captainPubkey = getPublicKey(captainSecret);
+  const manifest = parseCohortManifest({
+    v: 1,
+    cohort_id: "madeira-2026",
+    start_date: "2026-01-07",
+    end_date: "2026-02-03",
+    starting_week: 3,
+    captains: [{ week_number: 3, npub: npubEncode(captainPubkey) }],
+    participant_allowlist: [],
+  });
+  assert.ok(manifest);
+  const [slot] = deriveProvisionedWeeks(manifest);
+  assert.ok(slot);
+  const initial = seedWeekConfiguration(slot, { theme: "Accepted", public_description: "The known good configuration." });
+  const repository = new NostrRepository(new InMemoryTestTransport());
+  const accepted = await buildWeekConfigurationEvent({ slot, configuration: initial, secretKeyHex: captainSecret, createdAt: 100 });
+  await repository.publish(accepted);
+
+  const malformed = await finalizeEvent({
+    kind: APP_KIND,
+    created_at: 101,
+    tags: [["d", weekD(slot)], ["t", "captains-cabin-week"]],
+    content: "{",
+  }, captainSecret);
+  const wrongTag = await finalizeEvent({
+    kind: APP_KIND,
+    created_at: 102,
+    tags: [["d", weekD(slot)], ["t", "not-captains-cabin-week"]],
+    content: JSON.stringify(initial),
+  }, captainSecret);
+  await repository.publish(malformed);
+  await repository.publish(wrongTag);
+
+  const loaded = repository.getWeek(slot);
+  assert.equal(loaded?.event.id, accepted.id, "newer malformed or wrong-tag events do not displace accepted state");
+  const forged = { ...accepted, id: "f".repeat(64) };
+  assert.equal(await repository.ingest({ event: forged, relay: "wss://hostile.test" }), false, "bad event hashes are never indexed");
+  assert.equal(repository.getWeek(slot)?.event.id, accepted.id);
+});
+
+test("deliberate week publications are singular, monotonic, exact round trips, and retry queued events", async () => {
+  const captainSecret = key(100);
+  const captainPubkey = getPublicKey(captainSecret);
+  const manifest = parseCohortManifest({
+    v: 1,
+    cohort_id: "madeira-2026",
+    start_date: "2026-01-07",
+    end_date: "2026-02-03",
+    starting_week: 3,
+    captains: [{ week_number: 3, npub: npubEncode(captainPubkey) }],
+    participant_allowlist: [],
+  });
+  assert.ok(manifest);
+  const [slot] = deriveProvisionedWeeks(manifest);
+  assert.ok(slot);
+  const transport = new CountingTransport();
+  const repository = new NostrRepository(transport);
+  const initial = { ...seedWeekConfiguration(slot, { theme: "Six plus two", public_description: "The initial complete configuration." }), presentation_minutes: 6, question_minutes: 2 };
+  const created = await buildWeekConfigurationEvent({ slot, configuration: initial, secretKeyHex: captainSecret, createdAt: 100 });
+  await repository.publish(created);
+  assert.equal(transport.publishCalls, 1, "only the deliberate create action writes once");
+  assert.deepEqual(repository.getWeek(slot)?.configuration, initial, "6+2 survives signed serialization and verified read-back");
+
+  const remoteBase = await repository.refreshWeek(slot);
+  assert.equal(remoteBase?.event.id, created.id);
+  const revisedConfiguration = { ...initial, theme: "One plus two", presentation_minutes: 1, question_minutes: 2, base_event_id: created.id };
+  const revision = await buildWeekConfigurationEvent({ slot, configuration: revisedConfiguration, secretKeyHex: captainSecret, createdAt: nextCreatedAt(remoteBase?.event.created_at) });
+  await repository.publish(revision);
+  assert.equal(transport.publishCalls, 2, "one accepted revision writes exactly once");
+  assert.ok(revision.created_at > created.created_at, "rapid revisions are monotonic");
+  assert.deepEqual(repository.getWeek(slot)?.configuration, revisedConfiguration, "1+2 retains IDs, timings, and complete content through read-back");
+
+  const queued = await buildWeekConfigurationEvent({
+    slot,
+    configuration: { ...revisedConfiguration, theme: "Queued retry", base_event_id: revision.id },
+    secretKeyHex: captainSecret,
+    createdAt: nextCreatedAt(revision.created_at),
+  });
+  transport.rejectNextPublish = true;
+  await assert.rejects(repository.publish(queued), /relay unavailable/);
+  assert.equal(repository.pendingWeek(slot)?.id, queued.id, "relay failure retains the same signed event for retry");
+  assert.equal(repository.pendingCount(), 1);
+  await repository.retryPending();
+  assert.equal(repository.pendingCount(), 0);
+  assert.equal(repository.getWeek(slot)?.event.id, queued.id, "retry preserves the exact coordinate and signed event identity");
+});
+
 test("activity and field removal remain local until an explicit signed publication", () => {
   const slot = { cohort_id: "madeira-2026", week_number: 3, start_date: "2026-01-13", end_date: "2026-01-19", captain_pubkey: key(80) };
   const draft = seedWeekConfiguration(slot, { theme: "Nostr in Madeira", public_description: "A local unpublished draft." });
@@ -196,6 +299,22 @@ test("week workspace ships every loading, error, retry, accessibility, and respo
   assert.match(css, /overflow-wrap: anywhere/);
   assert.match(css, /:focus-visible/);
   assert.match(css, /min-height: 44px/);
+});
+
+test("week editor actions stay local and publication remains a deliberate guarded boundary", () => {
+  const app = readFileSync(new URL("../dist/assets/app/App.js", import.meta.url), "utf8");
+  const inputHandler = app.slice(app.indexOf("#onInput"), app.indexOf("#onFocusOut"));
+  const editorActions = app.slice(app.indexOf("#handleWeekAction"), app.indexOf("#focusWeekAction"));
+  const publication = app.slice(app.indexOf("async #publishWeek"), app.indexOf("readonly #onClick"));
+
+  assert.doesNotMatch(inputHandler, /#repository\.publish\(/, "typing and blur do not publish");
+  assert.doesNotMatch(editorActions, /#repository\.publish\(/, "add, move, confirmation, cancellation, preview, and readiness actions stay local");
+  assert.equal((publication.match(/#repository\.publish\(/g) ?? []).length, 1, "week publication has one explicit relay-write callsite");
+  assert.match(publication, /pendingWeek\(slot\)/, "retry reuses an already signed queued event");
+  assert.match(publication, /refreshWeek\(slot\)/, "revision checks the exact manifest-derived coordinate immediately before signing");
+  assert.match(publication, /baseEventId !== \(latest\?\.event\.id \?\? null\)/, "stale bases block signing");
+  assert.match(publication, /accepted\?\.event\.id !== event\.id/, "read-back must confirm the just-published event");
+  assert.match(publication, /#weekDraftBaseEvents\.set\(scope, accepted\.event\.id\)/, "verified read-back advances the retained draft base");
 });
 
 test("multi-client captain, participant, display-state, ranking, closure, and export flow", async () => {

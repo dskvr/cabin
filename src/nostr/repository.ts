@@ -174,6 +174,16 @@ export class NostrRepository {
     return this.#pending.length;
   }
 
+  /** Return the newest queued, manifest-authorized event for this exact week coordinate. */
+  pendingWeek(slot: ProvisionedWeek): NostrEvent | null {
+    return this.#pending
+      .map((item) => item.event)
+      .filter((event) => parseWeekConfigurationEvent(event, slot) !== null)
+      .reduce<NostrEvent | null>((latest, event) =>
+        !latest || compareReplaceable(event, latest) ? event : latest,
+      null);
+  }
+
   seenOn(eventId: string): string[] {
     return [...(this.#seenOn.get(eventId) ?? [])].filter((relay) => relay !== "local").sort();
   }

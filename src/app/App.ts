@@ -2027,8 +2027,10 @@ export class DemoDayApp {
       try {
         await this.#publishWeek();
         this.#weekPublicationError = null;
-      } catch {
-        this.#weekPublicationError = "We couldn't publish this week. Check your Nostr connection and signing identity, then try again.";
+      } catch (error) {
+        this.#weekPublicationError = error instanceof Error && error.message
+          ? error.message
+          : "We couldn't publish this week. Check your Nostr connection and signing identity, then try again.";
       }
     });
   }
@@ -2040,6 +2042,18 @@ export class DemoDayApp {
     const slot = weekForCaptain(manifest, identity.public_key_hex);
     if (!slot) throw new Error("This identity is not assigned a week to configure.");
     const scope = `week-${slot.week_number}`;
+    const pending = this.#repository.pendingWeek(slot);
+    if (pending) {
+      await this.#repository.retryPending();
+      const acceptedPending = await this.#repository.refreshWeek(slot);
+      if (acceptedPending?.event.id === pending.id) {
+        this.#weekDrafts.set(scope, structuredClone(acceptedPending.configuration));
+        this.#weekDraftBaseEvents.set(scope, acceptedPending.event.id);
+        this.#notice = { kind: "success", text: "Week published. Intake remains closed." };
+        return;
+      }
+      throw new Error("The signed week configuration is still queued for relay delivery. Try again after reconnecting.");
+    }
     const baseEventId = this.#weekDraftBaseEvents.get(scope) ?? this.#repository.getWeek(slot)?.event.id ?? null;
     const latest = await this.#repository.refreshWeek(slot);
     if (baseEventId !== (latest?.event.id ?? null)) {
@@ -2054,8 +2068,10 @@ export class DemoDayApp {
       slot, configuration: valid, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(latest?.event.created_at),
     });
     await this.#repository.publish(event);
-    if (!(await this.#repository.refreshWeek(slot))) throw new Error("The signed week configuration was not read back from the repository.");
-    this.#clearDraftScope(scope);
+    const accepted = await this.#repository.refreshWeek(slot);
+    if (accepted?.event.id !== event.id) throw new Error("The signed week configuration was not read back from the repository.");
+    this.#weekDrafts.set(scope, structuredClone(accepted.configuration));
+    this.#weekDraftBaseEvents.set(scope, accepted.event.id);
     this.#notice = { kind: "success", text: "Week published. Intake remains closed." };
   }
 
