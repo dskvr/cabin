@@ -239,6 +239,35 @@ test("a failed signature check cannot poison a later authentic event with the sa
   assert.equal(repository.getEventById(authentic.id)?.sig, authentic.sig);
 });
 
+test("oversized relay payloads are rejected before verification or repository retention", async () => {
+  let verificationCalls = 0;
+  const repository = new NostrRepository(new InMemoryTestTransport(), async () => {
+    verificationCalls += 1;
+    return true;
+  });
+  const oversized = {
+    id: "a".repeat(64),
+    pubkey: "b".repeat(64),
+    created_at: 1,
+    kind: APP_KIND,
+    tags: [],
+    content: "x".repeat(65_537),
+    sig: "c".repeat(128),
+  };
+  const tooManyTags = {
+    ...oversized,
+    content: "",
+    tags: Array.from({ length: 257 }, () => ["t", "x"]),
+  };
+
+  assert.equal(await repository.ingest({ event: oversized, relay: "wss://hostile.test" }), false);
+  assert.equal(verificationCalls, 0, "oversized relay content never reaches cryptographic verification");
+  assert.equal(repository.getEventById(oversized.id), undefined);
+  assert.deepEqual(repository.seenOn(oversized.id), []);
+  assert.equal(await repository.ingest({ event: tooManyTags, relay: "wss://hostile.test" }), false);
+  assert.equal(verificationCalls, 0, "oversized tag arrays never reach cryptographic verification");
+});
+
 test("deliberate week publications are singular, monotonic, exact round trips, and retry queued events", async () => {
   const captainSecret = key(100);
   const captainPubkey = getPublicKey(captainSecret);

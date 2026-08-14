@@ -26,6 +26,36 @@ interface PendingPublish {
   addedAtMs: number;
 }
 
+const MAX_RELAY_CONTENT_BYTES = 65_536;
+const MAX_RELAY_TAGS = 256;
+const MAX_RELAY_TAG_ELEMENTS = 16;
+const MAX_RELAY_TAG_STRING_LENGTH = 1_024;
+
+function hasBoundedUtf8Length(value: string, maximum: number): boolean {
+  let length = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x7f) length += 1;
+    else if (code <= 0x7ff) length += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length && value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) {
+      length += 4;
+      index += 1;
+    } else length += 3;
+    if (length > maximum) return false;
+  }
+  return true;
+}
+
+/** Reject oversized relay payloads before serializing or verifying untrusted data. */
+function hasSafeRelayBounds(event: NostrEvent): boolean {
+  if (typeof event.content !== "string" || !hasBoundedUtf8Length(event.content, MAX_RELAY_CONTENT_BYTES)) return false;
+  if (!Array.isArray(event.tags) || event.tags.length > MAX_RELAY_TAGS) return false;
+  return event.tags.every((tag) =>
+    Array.isArray(tag) && tag.length <= MAX_RELAY_TAG_ELEMENTS &&
+    tag.every((value) => typeof value === "string" && value.length <= MAX_RELAY_TAG_STRING_LENGTH),
+  );
+}
+
 function storageOrNull(): Storage | null {
   try {
     return globalThis.localStorage ?? null;
@@ -113,6 +143,7 @@ export class NostrRepository {
   }
 
   async ingest(item: RelayEvent): Promise<boolean> {
+    if (!hasSafeRelayBounds(item.event)) return false;
     let validity = this.#validity.get(item.event.id);
     if (!validity) {
       validity = this.#verify(item.event);
@@ -139,7 +170,7 @@ export class NostrRepository {
     const raw = await this.#transport.query(relays, filter, options);
     const valid: RelayEvent[] = [];
     for (const item of raw) {
-      if (await this.#verify(item.event)) {
+      if (hasSafeRelayBounds(item.event) && await this.#verify(item.event)) {
         valid.push(item);
         await this.ingest(item);
       }
