@@ -140,6 +140,18 @@ interface WindowWithWebLN extends Window {
   };
 }
 
+type ColorTheme = "dark" | "light";
+
+const THEME_STORAGE_KEY = "sedd-color-theme";
+
+function storedTheme(): ColorTheme {
+  try {
+    return globalThis.localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
 function randomHex(bytesLength: number): string {
   return [...crypto.getRandomValues(new Uint8Array(bytesLength))]
     .map((value) => value.toString(16).padStart(2, "0"))
@@ -229,10 +241,27 @@ export class DemoDayApp {
   #announcedNotice = "";
   #announcedBusy = "";
   #announcedProfileSearch = "";
+  #theme: ColorTheme = storedTheme();
 
   constructor(root: HTMLElement, repository: NostrRepository) {
     this.#root = root;
     this.#repository = repository;
+    this.#applyTheme();
+  }
+
+  #applyTheme(): void {
+    this.#root.ownerDocument.documentElement.dataset.theme = this.#theme;
+    this.#root.ownerDocument.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+      ?.setAttribute("content", this.#theme === "light" ? "#f3f7fa" : "#05070d");
+  }
+
+  #themeSwitcher(): string {
+    const light = this.#theme === "light";
+    const label = light ? "Use dark mode" : "Use light mode";
+    const icon = light
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.64 5.64l1.42 1.42M16.94 16.94l1.42 1.42M18.36 5.64l-1.42 1.42M7.06 16.94l-1.42 1.42"/><circle cx="12" cy="12" r="4"/></svg>'
+      : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 15.2A8 8 0 0 1 8.8 3.8 8.5 8.5 0 1 0 20.2 15.2Z"/></svg>';
+    return `<button type="button" class="theme-switcher" data-action="toggle-theme" aria-label="${label}" title="${label}" aria-pressed="${light}">${icon}</button>`;
   }
 
   start(): void {
@@ -319,6 +348,7 @@ export class DemoDayApp {
             <div class="status-cluster" aria-label="Connection status">
               <span class="relay-status ${connected > 0 ? "online" : "offline"}"><i></i>${connected}/${DEFAULT_RELAYS.length} relays</span>
               ${pending ? `<span class="pending-status">${pending} pending</span>` : ""}
+              ${this.#themeSwitcher()}
               ${identity && currentProfile ? profileComponent({ picture: currentProfile.picture, pubkey: identity.public_key_hex, name: currentProfile.name, size: "sm", className: "identity-chip" }) : ""}
             </div>
           </header>
@@ -1849,7 +1879,16 @@ export class DemoDayApp {
     if (actionElement.tagName === "A") return;
     event.preventDefault();
 
-    if (action === "dismiss-notice") {
+    if (action === "toggle-theme") {
+      this.#theme = this.#theme === "dark" ? "light" : "dark";
+      try {
+        globalThis.localStorage.setItem(THEME_STORAGE_KEY, this.#theme);
+      } catch {
+        // Theme still applies for this page when storage is unavailable.
+      }
+      this.#applyTheme();
+      this.requestRender();
+    } else if (action === "dismiss-notice") {
       this.#notice = null;
       this.requestRender();
     } else if (action === "edit-feedback") {

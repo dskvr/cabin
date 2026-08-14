@@ -38,3 +38,13 @@ test("motion integration keeps background renders and accessibility preferences 
   assert.match(app, /announceNotice \? 'role="alert"' : ""/);
   assert.match(app, /profileSearchAnnouncement !== this\.#announcedProfileSearch/);
 });
+
+test("light theme is selectable, persistent, and limited to color overrides", () => {
+  assert.match(css, /:root\[data-theme="light"\]\s*\{/);
+  assert.match(css, /\.theme-switcher\s*\{/);
+  assert.match(app, /const THEME_STORAGE_KEY = "sedd-color-theme"/);
+  assert.match(app, /data-action="toggle-theme"/);
+  assert.match(app, /documentElement\.dataset\.theme = this\.#theme/);
+  assert.match(app, /aria-label="\$\{label\}"/);
+  assert.match(index, /name="theme-color"/);
+});

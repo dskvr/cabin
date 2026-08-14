@@ -54,14 +54,17 @@ function createRelayField(canvas: HTMLCanvasElement, animate: boolean): Cleanup 
         const b = points[right]!;
         const distance = Math.hypot(a.x - b.x, a.y - b.y);
         if (distance > Math.min(width, 430) * .34) continue;
-        context.strokeStyle = `rgba(90, 229, 255, ${Math.max(0, .15 - distance / 2400)})`;
+        const lightTheme = document.documentElement.dataset.theme === "light";
+        context.strokeStyle = lightTheme
+          ? `rgba(13, 116, 148, ${Math.max(0, .13 - distance / 2600)})`
+          : `rgba(90, 229, 255, ${Math.max(0, .15 - distance / 2400)})`;
         context.lineWidth = .55;
         context.beginPath();
         context.moveTo(a.x, a.y);
         context.lineTo(b.x, b.y);
         context.stroke();
         const travel = (time * .00012 + seeded(left * 31 + right, 9)) % 1;
-        context.fillStyle = "rgba(182, 126, 255, .72)";
+        context.fillStyle = lightTheme ? "rgba(100, 62, 180, .42)" : "rgba(182, 126, 255, .72)";
         context.beginPath();
         context.arc(a.x + (b.x - a.x) * travel, a.y + (b.y - a.y) * travel, 1.2, 0, Math.PI * 2);
         context.fill();
@@ -69,7 +72,10 @@ function createRelayField(canvas: HTMLCanvasElement, animate: boolean): Cleanup 
     }
     points.forEach((point, index) => {
       const pulse = 2.2 + Math.sin(time * .002 + nodes[index]!.phase) * .7;
-      context.fillStyle = index < 10 ? "rgba(92, 239, 255, .88)" : "rgba(151, 105, 255, .66)";
+      const lightTheme = document.documentElement.dataset.theme === "light";
+      context.fillStyle = index < 10
+        ? (lightTheme ? "rgba(11, 126, 158, .58)" : "rgba(92, 239, 255, .88)")
+        : (lightTheme ? "rgba(102, 65, 177, .42)" : "rgba(151, 105, 255, .66)");
       context.shadowColor = context.fillStyle;
       context.shadowBlur = 12;
       context.beginPath();

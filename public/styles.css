@@ -2482,3 +2482,135 @@ footer a:hover {
 @media (prefers-reduced-motion: reduce) {
   .relay-field { opacity: .25; }
 }
+
+.theme-switcher {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  color: var(--accent);
+  background: rgba(7, 13, 23, .88);
+  cursor: pointer;
+}
+
+.theme-switcher:hover {
+  border-color: var(--line-strong);
+  background: var(--accent-soft);
+}
+
+.theme-switcher svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ink: #12212b;
+  --muted: #526773;
+  --paper: #f3f7fa;
+  --paper-deep: #e8f0f4;
+  --surface: #ffffff;
+  --surface-strong: #ffffff;
+  --line: rgba(15, 106, 133, .18);
+  --line-strong: rgba(12, 106, 136, .42);
+  --accent: #087f9f;
+  --accent-dark: #05647e;
+  --accent-soft: rgba(8, 127, 159, .1);
+  --green: #147552;
+  --green-soft: #e1f3ea;
+  --blue: #285f9d;
+  --blue-soft: #e5eefb;
+  --yellow: #865a08;
+  --yellow-soft: #fff0c9;
+  --red: #a52d49;
+  --red-soft: #fde6eb;
+  --shadow: 0 22px 70px rgba(32, 61, 76, .13), inset 0 1px rgba(255, 255, 255, .75);
+  --shadow-small: 0 12px 34px rgba(32, 61, 76, .1), inset 0 1px rgba(255, 255, 255, .8);
+}
+
+:root[data-theme="light"] ::selection { color: #fff; background: var(--accent); }
+:root[data-theme="light"] { scrollbar-color: rgba(8, 127, 159, .5) #e8f0f4; }
+:root[data-theme="light"],
+:root[data-theme="light"] body { background: var(--paper); }
+:root[data-theme="light"] body {
+  background:
+    radial-gradient(circle at 78% 8%, rgba(111, 70, 190, .09), transparent 34rem),
+    radial-gradient(circle at 12% 28%, rgba(8, 127, 159, .08), transparent 30rem),
+    var(--paper);
+}
+:root[data-theme="light"] body::after {
+  opacity: .28;
+  background: repeating-linear-gradient(0deg, transparent 0 3px, rgba(16, 102, 127, .045) 4px);
+  mix-blend-mode: multiply;
+}
+:root[data-theme="light"] .relay-field { opacity: .38; }
+:root[data-theme="light"] .brand-mark { color: #fff; box-shadow: 0 10px 28px rgba(74, 48, 142, .12), 0 0 25px rgba(8, 127, 159, .12); }
+:root[data-theme="light"] .relay-status,
+:root[data-theme="light"] .pending-status,
+:root[data-theme="light"] .identity-chip,
+:root[data-theme="light"] .live-pill,
+:root[data-theme="light"] .rank-badge,
+:root[data-theme="light"] .key-created,
+:root[data-theme="light"] .theme-switcher { background: rgba(255, 255, 255, .88); }
+:root[data-theme="light"] .hero {
+  border-color: rgba(8, 127, 159, .42);
+  background: linear-gradient(135deg, rgba(255, 255, 255, .96), rgba(243, 238, 255, .9));
+  box-shadow: 0 30px 90px rgba(32, 61, 76, .12), 0 0 80px rgba(8, 127, 159, .06);
+}
+:root[data-theme="light"] .hero h1,
+:root[data-theme="light"] .summary-hero h1,
+:root[data-theme="light"] .summary-metrics strong { color: var(--ink); text-shadow: none; }
+:root[data-theme="light"] .session-card,
+:root[data-theme="light"] .panel,
+:root[data-theme="light"] .project-card,
+:root[data-theme="light"] .summary-project,
+:root[data-theme="light"] .follow-card,
+:root[data-theme="light"] .profile-preview,
+:root[data-theme="light"] .current-demo,
+:root[data-theme="light"] .captain-controls,
+:root[data-theme="light"] .ranking-editor,
+:root[data-theme="light"] .feedback-form,
+:root[data-theme="light"] .feedback-results,
+:root[data-theme="light"] .follow-panel,
+:root[data-theme="light"] .identity-panel,
+:root[data-theme="light"] .callout { background: linear-gradient(145deg, rgba(255, 255, 255, .97), rgba(245, 249, 251, .94)); }
+:root[data-theme="light"] .session-card-open { border-color: rgba(20, 117, 82, .36); background: linear-gradient(145deg, #f4fcf8, #edf8f4); }
+:root[data-theme="light"] .session-card-closed { border-color: rgba(165, 45, 73, .3); background: linear-gradient(145deg, #fff8fa, #fbeff3); }
+:root[data-theme="light"] .button-primary,
+:root[data-theme="light"] .hero .button-primary,
+:root[data-theme="light"] .summary-hero .button-primary { color: #fff; box-shadow: 0 10px 28px rgba(8, 127, 159, .16); }
+:root[data-theme="light"] .button-primary:hover:not(:disabled) { color: #fff; background: #6542b5; border-color: #6542b5; box-shadow: 0 10px 28px rgba(74, 48, 142, .2); }
+:root[data-theme="light"] .button-secondary,
+:root[data-theme="light"] .icon-button { background: rgba(255, 255, 255, .92); }
+:root[data-theme="light"] .field input,
+:root[data-theme="light"] .field textarea,
+:root[data-theme="light"] .field select,
+:root[data-theme="light"] .invoice,
+:root[data-theme="light"] .timer { background: rgba(255, 255, 255, .92); }
+:root[data-theme="light"] .relay-fallback { background: linear-gradient(145deg, #fff9e8, #fff4d5); box-shadow: var(--shadow-small); }
+:root[data-theme="light"] .secret-backup { background: linear-gradient(145deg, #fff4f7, #fde9ee); box-shadow: var(--shadow-small); }
+:root[data-theme="light"] .zap-success-card { background: linear-gradient(145deg, #effaf5, #e4f4ed); box-shadow: var(--shadow-small); }
+:root[data-theme="light"] .notice-error { color: #86223a; background: #fff0f3; box-shadow: var(--shadow-small); }
+:root[data-theme="light"] .ranking-list > li { background: rgba(255, 255, 255, .9); }
+:root[data-theme="light"] .ranking-number { text-shadow: none; }
+:root[data-theme="light"] .avatar { filter: saturate(.9) contrast(1.02); }
+:root[data-theme="light"] .feedback-bubble { background: #f5f9fb !important; }
+:root[data-theme="light"] .modal-backdrop { background: rgba(25, 43, 54, .48); }
+:root[data-theme="light"] .modal { background: #fff; box-shadow: 0 28px 90px rgba(32, 61, 76, .22); }
+:root[data-theme="light"] .spinner { border-color: rgba(8, 127, 159, .18); border-top-color: var(--accent); }
+:root[data-theme="light"] .display-stage { background: radial-gradient(circle at 50% 45%, rgba(111, 70, 190, .1), transparent 42%), #eef5f8; }
+:root[data-theme="light"] .summary-hero {
+  border-color: rgba(8, 127, 159, .38);
+  color: var(--ink);
+  background: radial-gradient(circle at 82% 30%, rgba(111, 70, 190, .1), transparent 27rem), linear-gradient(135deg, #fff, #edf5f8);
+  box-shadow: 0 30px 90px rgba(32, 61, 76, .12);
+}
+:root[data-theme="light"] .summary-metrics div { color: var(--ink); background: rgba(255, 255, 255, .95); }
