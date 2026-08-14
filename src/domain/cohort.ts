@@ -1,5 +1,6 @@
 import { isRecord, isValidHexPubkey } from "./utils.js";
 import { decodeNpub } from "../nostr/bech32.js";
+import type { DemoDaySessionV1 } from "./types.js";
 
 const MAX_PEOPLE = 512;
 
@@ -100,4 +101,12 @@ export function deriveProvisionedWeeks(manifest: CohortManifestV1): ProvisionedW
 
 export function weekForCaptain(manifest: CohortManifestV1, pubkey: string): ProvisionedWeek | null {
   return deriveProvisionedWeeks(manifest).find((slot) => slot.captain_pubkey === pubkey.toLowerCase()) ?? null;
+}
+
+export function sessionBelongsToWeek(state: DemoDaySessionV1, slot: ProvisionedWeek): boolean {
+  const startsAt = dateAt(slot.start_date);
+  const endsAt = dateAt(slot.end_date) + 86_400_000;
+  if (state.created_at_ms < startsAt || state.created_at_ms >= endsAt) return false;
+  const hasWeekCoordinates = state.cohort_id !== undefined || state.week_number !== undefined;
+  return !hasWeekCoordinates || state.cohort_id === slot.cohort_id && state.week_number === slot.week_number;
 }

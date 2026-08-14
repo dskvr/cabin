@@ -65,7 +65,7 @@ import {
   validateWeekConfiguration,
   MAX_WEEK_CONFIGURATION_CONTENT_LENGTH,
 } from "../dist/assets/domain/week.js";
-import { weekD } from "../dist/assets/domain/cohort.js";
+import { sessionBelongsToWeek, weekD } from "../dist/assets/domain/cohort.js";
 import { parseRoute } from "../dist/assets/app/router.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
 import { calculateFollowSuggestions } from "../dist/assets/domain/follows.js";
@@ -230,6 +230,25 @@ function sessionState(overrides = {}) {
     ...overrides,
   };
 }
+
+test("Demo Day discovery excludes sessions outside the derived cohort week", () => {
+  const slot = {
+    cohort_id: "sec-08",
+    week_number: 4,
+    start_date: "2026-08-10",
+    end_date: "2026-08-14",
+    timezone: "Atlantic/Madeira",
+    captain_pubkey: "ab".repeat(32),
+    participant_allowlist: [],
+  };
+  const at = (value) => Date.parse(`${value}T12:00:00Z`);
+
+  assert.equal(sessionBelongsToWeek(sessionState({ created_at_ms: at("2026-08-09") }), slot), false);
+  assert.equal(sessionBelongsToWeek(sessionState({ created_at_ms: at("2026-08-10") }), slot), true);
+  assert.equal(sessionBelongsToWeek(sessionState({ created_at_ms: at("2026-08-14"), cohort_id: "sec-08", week_number: 4 }), slot), true);
+  assert.equal(sessionBelongsToWeek(sessionState({ created_at_ms: at("2026-08-14"), cohort_id: "sec-08", week_number: 3 }), slot), false);
+  assert.equal(sessionBelongsToWeek(sessionState({ created_at_ms: at("2026-08-15") }), slot), false);
+});
 
 function entryState(realPubkey, sourceProfileEventId, demoName, ranking = [], feedback = {}) {
   return {

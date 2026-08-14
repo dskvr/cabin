@@ -7,7 +7,7 @@ import {
   QUESTIONS_MS,
 } from "../config/relays.js";
 import { COHORT_MANIFEST } from "../config/cohort.js";
-import { deriveProvisionedWeeks, parseCohortManifest, weekForCaptain, type ProvisionedWeek } from "../domain/cohort.js";
+import { deriveProvisionedWeeks, parseCohortManifest, sessionBelongsToWeek, weekForCaptain, type ProvisionedWeek } from "../domain/cohort.js";
 import {
   cloneWeekConfiguration,
   configurationForArchive,
@@ -587,11 +587,7 @@ export class DemoDayApp {
   }
 
   #sessionsForWeek(slot: ProvisionedWeek): ParsedSession[] {
-    const current = this.#currentPublicWeek();
-    return this.#repository.sessions().filter((session) =>
-      session.state.cohort_id === slot.cohort_id && session.state.week_number === slot.week_number
-      || session.state.cohort_id === undefined && session.state.week_number === undefined && current?.week_number === slot.week_number,
-    );
+    return this.#repository.sessions().filter((session) => sessionBelongsToWeek(session.state, slot));
   }
 
   #renderDemoSessionCard(session: ParsedSession): string {
