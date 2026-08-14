@@ -41,12 +41,14 @@ import {
   moveProposalField,
   removeActivity,
   removeProposalField,
+  publicWeekProjection,
   seedWeekConfiguration,
   updateActivity,
   updateProposalField,
   validateProposalAnswers,
   validateWeekConfiguration,
 } from "../dist/assets/domain/week.js";
+import { parseRoute } from "../dist/assets/app/router.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
 import { calculateFollowSuggestions } from "../dist/assets/domain/follows.js";
 import {
@@ -623,4 +625,30 @@ test("proposal fields keep answer association through rename, reorder, requiredn
   assert.equal(validateWeekConfiguration({ ...removed, proposal_fields: [] }).valid, false, "empty schemas block publication");
   assert.equal(validateWeekConfiguration({ ...removed, proposal_fields: [{ ...title, label: "" }] }).valid, false, "empty labels block publication");
   assert.equal(validateWeekConfiguration({ ...removed, proposal_fields: [{ ...title, label: "x".repeat(161) }] }).valid, false, "overlong labels block publication");
+});
+
+test("public week projection keeps an exact safe allowlist and normalized public links", () => {
+  const slot = { cohort_id: "madeira-2026", week_number: 3, start_date: "2026-01-13", end_date: "2026-01-19", captain_pubkey: key(92), participant_allowlist: [key(93)] };
+  const configuration = seedWeekConfiguration(slot, { theme: "<img src=x onerror=alert(1)>", public_description: "<script>unsafe</script>" });
+  configuration.activities[0].location = "<b>Harbour</b>";
+  configuration.activities[0].link = "javascript:alert(1)";
+  configuration.base_event_id = "aa".repeat(32);
+
+  const projection = publicWeekProjection(configuration);
+  assert.deepEqual(Object.keys(projection).sort(), ["activities", "presentation_minutes", "proposal_fields", "public_description", "question_minutes", "theme", "timezone"]);
+  assert.deepEqual(Object.keys(projection.activities[0]).sort(), ["date", "day", "ends_at", "link", "location", "name", "starts_at"]);
+  assert.deepEqual(Object.keys(projection.proposal_fields[0]).sort(), ["label", "required"]);
+  assert.equal(projection.activities[0].link, null, "unsafe schemes never reach the public projection");
+  assert.equal("participant_allowlist" in projection, false);
+  assert.equal("base_event_id" in projection, false);
+  assert.equal("intake_open" in projection, false);
+
+  const safe = publicWeekProjection({ ...configuration, activities: [{ ...configuration.activities[0], link: "https://example.com/demo" }, ...configuration.activities.slice(1)] });
+  assert.equal(safe.activities[0].link, "https://example.com/demo");
+});
+
+test("week setup route accepts no user-controlled captain authority", () => {
+  assert.deepEqual(parseRoute("#/week-setup"), { name: "week-setup" });
+  assert.equal(parseRoute("#/week-setup/captain/" + key(94)).name, "invalid");
+  assert.equal(parseRoute("#/week-setup/30078:captain:week").name, "invalid");
 });
