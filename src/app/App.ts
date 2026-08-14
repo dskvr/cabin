@@ -7,7 +7,7 @@ import {
   QUESTIONS_MS,
 } from "../config/relays.js";
 import { COHORT_MANIFEST } from "../config/cohort.js";
-import { parseCohortManifest, weekForCaptain } from "../domain/cohort.js";
+import { parseCohortManifest, weekForCaptain, type ProvisionedWeek } from "../domain/cohort.js";
 import {
   addActivity,
   addProposalField,
@@ -241,6 +241,10 @@ export class DemoDayApp {
   #weekRemoval: { scope: string; kind: "activity" | "field"; id: string } | null = null;
   #weekDraftBaseEvents = new Map<string, string | null>();
   #weekPreview: { scope: string; status: "loading" | "ready"; returnFocus: string } | null = null;
+  #weekLoading = new Set<string>();
+  #weekResolved = new Set<string>();
+  #weekLoadErrors = new Map<string, string>();
+  #weekPublicationError: string | null = null;
   #requestedProfiles = new Set<string>();
   #sessionUnsubscribe: (() => void) | null = null;
   #zapUnsubscribe: (() => void) | null = null;
@@ -355,9 +359,10 @@ export class DemoDayApp {
     const motionModalKey = this.#zapModal ? `${this.#zapModal.entryAuthor}:${this.#zapModal.status}` : "";
     const animateModal = Boolean(motionModalKey) && motionModalKey !== this.#motionModalKey;
     this.#motionModalKey = motionModalKey;
-    const announceNotice = this.#notice?.kind === "error" && this.#notice.text !== this.#announcedNotice;
+    const announceNotice = Boolean(this.#notice) && this.#notice?.text !== this.#announcedNotice;
+    const alertRole = announceNotice ? 'role="alert"' : "";
     const announceBusy = Boolean(this.#busy) && this.#busy !== this.#announcedBusy;
-    this.#announcedNotice = this.#notice?.kind === "error" ? this.#notice.text : "";
+    this.#announcedNotice = this.#notice?.text ?? "";
     this.#announcedBusy = this.#busy ?? "";
     this.#root.innerHTML = `
       <div class="app-shell ${this.#route.name === "display" ? "display-shell" : ""}">
@@ -376,9 +381,9 @@ export class DemoDayApp {
             </div>
           </header>
         `}
-        ${this.#notice?.kind === "error" ? `<div class="notice notice-error" ${announceNotice ? 'role="alert"' : ""}>${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
+        ${this.#notice ? `<div class="notice notice-${escapeAttr(this.#notice.kind)}" ${this.#notice.kind === "error" ? alertRole : announceNotice ? 'role="status" aria-live="polite"' : ""}>${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
         <main class="${this.#route.name === "display" ? "display-main" : "page"}">${page}</main>
-        ${this.#route.name === "display" ? "" : `<footer><nav>${this.#route.name === "session" ? `<a href="#/display/${escapeAttr(this.#route.naddr)}" data-fullscreen-display>Front of room display</a>` : ""}<a href="#/create">I AM THE CAPTAIN NOW</a><a href="#/">Active demo days</a><a href="#/advanced">Advanced</a></nav></footer>`}
+        ${this.#route.name === "display" ? "" : `<footer><nav>${this.#route.name === "session" ? `<a href="#/display/${escapeAttr(this.#route.naddr)}" data-fullscreen-display>Front of room display</a>` : ""}<a href="#/week-setup">Week setup</a><a href="#/create">I AM THE CAPTAIN NOW</a><a href="#/">Active demo days</a><a href="#/advanced">Advanced</a></nav></footer>`}
         ${this.#busy ? `<div class="busy-overlay" ${announceBusy ? 'role="status"' : ""}><span class="spinner"></span><strong>${escapeHtml(this.#busy)}</strong></div>` : ""}
         ${this.#renderZapModal()}
       </div>
@@ -456,8 +461,7 @@ export class DemoDayApp {
       </article>`;
     }).join("");
 
-    return `${this.#renderWeekConfiguration()}
-    ${activeSessionCount === 0 ? `<section class="hero">
+    return `${activeSessionCount === 0 ? `<section class="hero">
       <h1>SOVEREIGN ENGINEERING<br>Demo Day</h1>
       <a class="button button-primary button-large" href="#/create">I AM THE CAPTAIN NOW</a>
     </section>` : ""}
@@ -475,9 +479,22 @@ export class DemoDayApp {
     const persisted = this.#repository.getWeek(slot);
     const seed = persisted?.configuration ?? seedWeekConfiguration(slot, { theme: "Week ${slot.week_number}", public_description: "" });
     const scope = `week-${slot.week_number}`;
+    if (this.#weekLoading.has(scope)) {
+      return `<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading week configuration…</section>`;
+    }
+    const loadError = this.#weekLoadErrors.get(scope);
+    if (loadError) {
+      return `<section class="panel week-state-panel" role="alert"><h1>Week configuration</h1><p>We couldn't load this week configuration. Check your Nostr connection and try again.</p><button class="button button-secondary" data-action="retry-week-configuration">Retry</button></section>`;
+    }
+    if (!this.#weekResolved.has(scope)) {
+      void this.#refreshWeekConfiguration(slot);
+      return `<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading week configuration…</section>`;
+    }
     if (!this.#weekDraftBaseEvents.has(scope)) this.#weekDraftBaseEvents.set(scope, persisted?.event.id ?? null);
     const draft = this.#weekDraft(scope, seed);
     const readiness = validateWeekConfiguration(draft);
+    const draftChanged = JSON.stringify(draft) !== JSON.stringify(seed);
+    const captain = this.#profile(slot.captain_pubkey);
     if (this.#weekPreview?.scope === scope) {
       if (this.#weekPreview.status === "loading") {
         return `<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading preview…</section>`;
@@ -513,13 +530,15 @@ export class DemoDayApp {
       return `<section class="panel destructive-confirmation" role="dialog" aria-modal="true"><h2>Remove from draft?</h2><p>Remove “${escapeHtml(title)}” from this unpublished draft?</p><div class="form-actions"><button class="button button-secondary" data-action="cancel-week-removal">Cancel</button><button class="button button-danger" data-action="confirm-week-removal">${removeLabel}</button></div></section>`;
     })() : "";
     const readinessItems = [["Week details", "week_details"], ["Tuesday activities", "tuesday_activities"], ["Wednesday activities", "wednesday_activities"], ["Proposal form", "proposal_form"], ["Demo Day timing", "demo_day_timing"]] as const;
-    return `<section class="narrow-page week-workspace"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>Week ${slot.week_number}</h1><p>Atlantic/Madeira · ${persisted ? "Changes ready to publish" : "Draft"}</p>
+    const status = draftChanged ? "Changes ready to publish" : persisted ? "Setup published — intake closed" : "Draft";
+    return `<section class="narrow-page week-workspace"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>Week ${slot.week_number}</h1><p>${escapeHtml(slot.start_date)} – ${escapeHtml(slot.end_date)} · Atlantic/Madeira</p><p>Assigned captain: ${escapeHtml(captain.name)}</p><p class="week-status">${status}</p>${draftChanged ? `<p class="week-local-status" aria-live="polite">Changes saved locally</p>` : ""}
       ${confirmation}
-      <form class="panel form-stack" data-form-action="publish-week" data-draft-scope="${escapeAttr(scope)}"><h2>Week details</h2><label class="field"><span>Theme *</span><input name="theme" data-week-field="config:theme" value="${escapeAttr(draft.theme)}" maxlength="120" /></label><label class="field"><span>Public description *</span><textarea name="public_description" data-week-field="config:public_description" maxlength="4000" rows="4">${escapeHtml(draft.public_description)}</textarea></label>
+      ${this.#weekPublicationError ? `<section class="notice notice-error week-notice" role="alert"><p>${escapeHtml(this.#weekPublicationError)}</p><button class="button button-secondary" data-action="retry-week-publication">Try again</button></section>` : ""}
+      <form class="panel form-stack" data-form-action="publish-week" data-draft-scope="${escapeAttr(scope)}"><h2>Week details</h2><label class="field"><span>Theme *</span><input id="week-theme" name="theme" data-week-field="config:theme" value="${escapeAttr(draft.theme)}" maxlength="120" aria-describedby="week-theme-error" ${readiness.sections.week_details.length ? 'aria-invalid="true"' : ""} /></label>${readiness.sections.week_details.length ? `<small id="week-theme-error" class="field-error">${escapeHtml(readiness.sections.week_details[0] ?? "")}</small>` : ""}<label class="field"><span>Public description *</span><textarea id="week-public-description" name="public_description" data-week-field="config:public_description" maxlength="4000" rows="4" aria-describedby="week-public-description-help">${escapeHtml(draft.public_description)}</textarea><small id="week-public-description-help">Visible in the public week preview.</small></label>
       <section class="week-subsection"><h2>Activities</h2>${group("tuesday", "Tuesday talks")}${group("wednesday", "Wednesday workshops")}</section>
       <section class="week-subsection"><h2>Proposal form</h2>${fields || `<div class="empty-state compact"><h3>No proposal fields yet</h3><p>Add a field before publishing this week.</p></div>`}<button class="button button-secondary" data-action="add-week-field" data-week-scope="${escapeAttr(scope)}">Add field</button></section>
       <section class="week-subsection"><h2>Demo Day timing</h2><label class="field"><span>Presentation duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:presentation_minutes" value="${draft.presentation_minutes}" /></label><label class="field"><span>Question duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:question_minutes" value="${draft.question_minutes}" /></label><p>Demo Day timing: ${draft.presentation_minutes}:00 presentation + ${draft.question_minutes}:00 questions.</p></section>
-      <section class="panel readiness-panel"><h2>Readiness</h2>${readinessItems.map(([label, key]) => `<p class="${readiness.sections[key].length ? "needs-attention" : "ready"}"><strong>${escapeHtml(label)}:</strong> ${readiness.sections[key].length ? "Needs attention" : "Ready"}</p>`).join("")} ${readiness.valid ? "" : "<p>This section needs attention. Complete the highlighted fields to publish this week.</p>"}<div class="form-actions"><button class="button button-secondary" data-action="preview-week" data-week-scope="${escapeAttr(scope)}">Preview week</button><button class="button button-primary" type="submit" ${readiness.valid ? "" : "disabled"}>${persisted ? "Publish changes" : "Create week"}</button></div></section></form>
+      <section class="panel readiness-panel"><h2>Readiness</h2>${readinessItems.map(([label, key]) => readiness.sections[key].length ? `<button class="readiness-action needs-attention" data-action="focus-week-invalid" data-week-scope="${escapeAttr(scope)}" data-week-section="${key}"><strong>${escapeHtml(label)}:</strong> Needs attention</button>` : `<p class="ready"><strong>${escapeHtml(label)}:</strong> Ready</p>`).join("")} ${readiness.valid ? "" : "<p>This section needs attention. Complete the highlighted fields to publish this week.</p>"}<div class="form-actions"><button class="button button-secondary" data-action="preview-week" data-week-scope="${escapeAttr(scope)}">Preview week</button><button class="button button-primary" type="submit" ${readiness.valid ? "" : "disabled"}>${persisted ? "Publish changes" : "Create week"}</button></div></section></form>
     </section>`;
   }
 
@@ -1041,6 +1060,42 @@ export class DemoDayApp {
     }
     this.#weekDraftBaseEvents.delete(scope);
     this.#weekDrafts.delete(scope);
+  }
+
+  async #refreshWeekConfiguration(slot: ProvisionedWeek): Promise<void> {
+    const scope = `week-${slot.week_number}`;
+    if (this.#weekLoading.has(scope)) return;
+    this.#weekLoading.add(scope);
+    this.#weekLoadErrors.delete(scope);
+    this.requestRender();
+    try {
+      await this.#repository.refreshWeek(slot);
+      this.#weekResolved.add(scope);
+    } catch (error) {
+      this.#weekLoadErrors.set(scope, error instanceof Error ? error.message : String(error));
+    } finally {
+      this.#weekLoading.delete(scope);
+      this.requestRender();
+    }
+  }
+
+  #focusWeekInvalid(scope: string, section: string, draft: WeekConfigurationV1): void {
+    let selector = "#week-theme";
+    if (section === "tuesday_activities" || section === "wednesday_activities") {
+      const activity = draft.activities.find((item) => item.day === (section === "tuesday_activities" ? "tuesday" : "wednesday"));
+      if (activity) {
+        this.#weekExpanded.add(activity.id);
+        selector = `[data-week-field="activity:name"][data-week-id="${CSS.escape(activity.id)}"]`;
+      } else selector = `[data-action="add-week-activity"][data-week-scope="${CSS.escape(scope)}"][data-day="${section === "tuesday_activities" ? "tuesday" : "wednesday"}"]`;
+    } else if (section === "proposal_form") {
+      const proposalField = draft.proposal_fields[0];
+      if (proposalField) {
+        this.#weekExpanded.add(proposalField.id);
+        selector = `[data-week-field="field:label"][data-week-id="${CSS.escape(proposalField.id)}"]`;
+      } else selector = `[data-action="add-week-field"][data-week-scope="${CSS.escape(scope)}"]`;
+    } else if (section === "demo_day_timing") selector = `[data-week-field="config:presentation_minutes"]`;
+    this.requestRender();
+    queueMicrotask(() => this.#root.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true }));
   }
 
   #currentSelected(): SelectedSession | null {
@@ -1905,7 +1960,7 @@ export class DemoDayApp {
       return;
     }
     if (action === "publish-week") {
-      void this.#withBusy("Publishing week configuration", () => this.#publishWeek(data));
+      void this.#publishCurrentWeek();
       return;
     }
     if (action === "join-session") {
@@ -1967,7 +2022,18 @@ export class DemoDayApp {
     }
   };
 
-  async #publishWeek(formData: FormData): Promise<void> {
+  #publishCurrentWeek(): Promise<void> {
+    return this.#withBusy("Publishing week configuration", async () => {
+      try {
+        await this.#publishWeek();
+        this.#weekPublicationError = null;
+      } catch {
+        this.#weekPublicationError = "We couldn't publish this week. Check your Nostr connection and signing identity, then try again.";
+      }
+    });
+  }
+
+  async #publishWeek(): Promise<void> {
     const identity = loadIdentity();
     const manifest = parseCohortManifest(COHORT_MANIFEST);
     if (!identity || !manifest) throw new Error("Week configuration is not ready");
@@ -2165,6 +2231,17 @@ export class DemoDayApp {
   #handleWeekAction(action: string, element: HTMLElement): boolean {
     const scope = element.dataset.weekScope;
     const draft = scope ? this.#weekDrafts.get(scope) : null;
+    if (action === "retry-week-configuration") {
+      const manifest = parseCohortManifest(COHORT_MANIFEST);
+      const identity = loadIdentity();
+      const slot = manifest && identity ? weekForCaptain(manifest, identity.public_key_hex) : null;
+      if (slot) void this.#refreshWeekConfiguration(slot);
+      return true;
+    }
+    if (action === "retry-week-publication") {
+      void this.#publishCurrentWeek();
+      return true;
+    }
     if (action === "preview-week") {
       if (!scope || !draft) return true;
       this.#weekPreview = { scope, status: "loading", returnFocus: this.#focusSelector(element) };
@@ -2181,6 +2258,11 @@ export class DemoDayApp {
       this.#weekPreview = null;
       this.requestRender();
       if (returnFocus) queueMicrotask(() => this.#root.querySelector<HTMLElement>(returnFocus)?.focus({ preventScroll: true }));
+      return true;
+    }
+    if (action === "focus-week-invalid") {
+      const section = element.dataset.weekSection;
+      if (scope && draft && section) this.#focusWeekInvalid(scope, section, draft);
       return true;
     }
     if (action === "toggle-week-card") {
