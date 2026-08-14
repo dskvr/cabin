@@ -335,26 +335,23 @@ This shape intentionally makes a rename unable to change the answer key. [CITED:
 | # | Claim | Section | Risk if Wrong |
 |---|-------|---------|---------------|
 | A1 | Date-only plus local `HH:MM` values are sufficient until actual schedule placement needs instants. | Summary | Later phases may require a Temporal/polyfill migration earlier than planned. |
-| A2 | A 1–180 whole-minute timing range is a suitable bounded parser/UI policy. | Open Questions | A product need for longer sessions would require a config adjustment. |
+| A2 | A 1–180 whole-minute timing range is a suitable bounded parser/UI policy. | Open Questions (RESOLVED) | A product need for longer sessions would require a config adjustment. |
 | A3 | Re-fetch-and-compare `base_event_id` is enough MVP stale-draft protection despite no atomic relay CAS. | Common Pitfalls | Concurrent same-captain devices can still race after the check. |
-| A4 | A final partial cohort period should be excluded; derive only full seven-day slots contained by the manifest end date. | Open Questions | A cohort operator may expect a truncated final week. |
+| A4 | A final partial cohort period should be excluded; derive only full seven-day slots contained by the manifest end date. | Open Questions (RESOLVED) | A cohort operator may expect a truncated final week. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Canonical manifest representation and commit policy**
    - What we know: It must be deployment-time validated public data and contain dates, captain assignments, participant allowlist, and `starting_week`. [VERIFIED: .planning/phases/01-secure-week-configuration/01-CONTEXT.md]
-   - What's unclear: Whether production supplies a generated module, checked-in JSON, or environment-injected build artifact. [VERIFIED: .planning/phases/01-secure-week-configuration/01-CONTEXT.md]
-   - Recommendation: Use a generated `src/config/cohort.ts` module with no secret material and explicit schema validation at load; commit an example/test fixture, not production roster values. [ASSUMED]
+   - **RESOLVED:** Use `src/config/cohort.ts` as the deployment-visible TypeScript manifest module, validate its exported unknown data at the domain boundary, include no private key material, and keep test roster values in tests rather than treating them as production roster configuration. This is the representation selected by Plan 01. [PLANNED]
 
 2. **Minimum proposal schema and timing ceiling**
    - What we know: The UI requires at least one valid field to publish and requires whole minutes of at least one. [VERIFIED: .planning/phases/01-secure-week-configuration/01-UI-SPEC.md]
-   - What's unclear: Exact initial field labels and the highest valid duration. [VERIFIED: .planning/phases/01-secure-week-configuration/01-CONTEXT.md]
-   - Recommendation: Seed required `Project title` and `Description` fields with stable IDs; enforce `1..180` minutes for both timing values. [ASSUMED]
+   - **RESOLVED:** Seed required `Project title` and `Description` proposal fields with deterministic stable IDs, require at least one valid field before publication, and accept only whole-minute presentation/question durations from 1 through 180 inclusive. This is the schema and timing policy selected by Plan 02. [PLANNED]
 
 3. **Cohort end-date behavior**
    - What we know: The start date anchors consecutive seven-day weeks and cohorts also provide an end date. [VERIFIED: .planning/phases/01-secure-week-configuration/01-CONTEXT.md]
-   - What's unclear: Whether an incomplete final seven-day slot is valid. [ASSUMED]
-   - Recommendation: Reject/omit partial slots and require every provisioned slot to end on or before the cohort end date. [ASSUMED]
+   - **RESOLVED:** Derive only complete seven-day slots whose final date is on or before the manifest `end_date`; omit an incomplete terminal slot. This is the cohort boundary behavior selected by Plan 01. [PLANNED]
 
 ## Environment Availability
 
