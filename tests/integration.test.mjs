@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { APP_KIND } from "../dist/assets/config/relays.js";
 import { parseCohortManifest, deriveProvisionedWeeks, weekD } from "../dist/assets/domain/cohort.js";
@@ -172,6 +173,29 @@ test("public preview renders only the escaped public configuration projection", 
   assert.match(markup, /href="https:\/\/example\.com\/demo"/);
   assert.doesNotMatch(markup, /participant_allowlist|base_event_id|proposal-submission/i);
   assert.doesNotMatch(markup, /<script>|<svg onload/);
+});
+
+test("week workspace ships every loading, error, retry, accessibility, and responsive state contract", () => {
+  const app = readFileSync(new URL("../dist/assets/app/App.js", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+
+  for (const copy of [
+    "Loading week configuration…",
+    "Loading preview…",
+    "This identity is not assigned a week to configure.",
+    "Changes saved locally",
+    "We couldn't publish this week. Check your Nostr connection and signing identity, then try again.",
+    "Try again",
+    "Week published. Intake remains closed.",
+    "Needs attention",
+  ]) assert.match(app, new RegExp(copy.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")));
+  assert.match(app, /aria-describedby/);
+  assert.match(app, /aria-live="polite"/);
+  assert.match(app, /focusWeekInvalid/);
+  assert.match(css, /@media \(max-width: 660px\)/);
+  assert.match(css, /overflow-wrap: anywhere/);
+  assert.match(css, /:focus-visible/);
+  assert.match(css, /min-height: 44px/);
 });
 
 test("multi-client captain, participant, display-state, ranking, closure, and export flow", async () => {
