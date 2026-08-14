@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { APP_KIND } from "../dist/assets/config/relays.js";
 import { parseCohortManifest, deriveProvisionedWeeks, weekD } from "../dist/assets/domain/cohort.js";
-import { parseWeekConfiguration, seedWeekConfiguration } from "../dist/assets/domain/week.js";
+import { parseWeekConfiguration, removeActivity, removeProposalField, seedWeekConfiguration } from "../dist/assets/domain/week.js";
 import { npubEncode } from "../dist/assets/nostr/bech32.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
 import { buildExport } from "../dist/assets/domain/export.js";
@@ -137,6 +137,23 @@ test("week configuration rejects invalid boundaries and detects a stale revision
   const latest = await repository.refreshWeek(slot);
   assert.notEqual(latest?.event.id, loaded?.event.id, "a changed relay base is visible before a revision signs");
   assert.equal(initial.base_event_id, null, "a stale local draft retains its original base rather than adopting the remote revision");
+});
+
+test("activity and field removal remain local until an explicit signed publication", () => {
+  const slot = { cohort_id: "madeira-2026", week_number: 3, start_date: "2026-01-13", end_date: "2026-01-19", captain_pubkey: key(80) };
+  const draft = seedWeekConfiguration(slot, { theme: "Nostr in Madeira", public_description: "A local unpublished draft." });
+  const activity = draft.activities[0];
+  const field = draft.proposal_fields[0];
+  assert.ok(activity && field);
+  const answers = { [field.id]: "Cabin maps" };
+  const cancelled = structuredClone(draft);
+  assert.deepEqual(cancelled, draft, "cancelling destructive confirmation retains the exact draft");
+  const afterActivity = removeActivity(draft, activity.id);
+  const afterField = removeProposalField(afterActivity, field.id);
+  assert.equal(afterField.activities.some((item) => item.id === activity.id), false);
+  assert.equal(afterField.proposal_fields.some((item) => item.id === field.id), false);
+  assert.equal(answers[field.id], "Cabin maps", "unaffected local answer state is not rewritten by removal");
+  assert.equal(parseWeekConfiguration(afterField)?.base_event_id, null, "local destructive mutations emit no relay publication");
 });
 
 test("multi-client captain, participant, display-state, ranking, closure, and export flow", async () => {

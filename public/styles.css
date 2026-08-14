@@ -2527,6 +2527,7 @@ footer a:hover {
 .readiness-panel p { margin-bottom: 8px; }
 .ready { color: var(--green); }
 .needs-attention { color: var(--red); }
+.field-error { color: var(--red); font-weight: 700; }
 .destructive-confirmation { position: sticky; top: 16px; z-index: 31; border-color: var(--red); }
 @media (max-width: 660px) {
   .week-workspace { gap: 24px; }

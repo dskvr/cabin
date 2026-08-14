@@ -93,6 +93,8 @@ export function field({
   min,
   step,
   help = "",
+  error = "",
+  id,
   autocomplete = "off",
 }: {
   label: string;
@@ -105,9 +107,15 @@ export function field({
   min?: number;
   step?: number;
   help?: string;
+  error?: string;
+  id?: string;
   autocomplete?: string;
 }): string {
-  return `<label class="field"><span>${escapeHtml(label)}</span><input name="${escapeAttr(name)}" type="${escapeAttr(type)}" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder)}" ${required ? "required" : ""} ${maxlength ? `maxlength="${maxlength}"` : ""} ${min != null ? `min="${min}"` : ""} ${step != null ? `step="${step}"` : ""} autocomplete="${escapeAttr(autocomplete)}" />${help ? `<small>${escapeHtml(help)}</small>` : ""}</label>`;
+  const inputId = id ?? `field-${name}`;
+  const helpId = help ? `${inputId}-help` : "";
+  const errorId = error ? `${inputId}-error` : "";
+  const describedBy = [helpId, errorId].filter(Boolean).join(" ");
+  return `<label class="field"><span>${escapeHtml(label)}</span><input id="${escapeAttr(inputId)}" name="${escapeAttr(name)}" type="${escapeAttr(type)}" value="${escapeAttr(value)}" placeholder="${escapeAttr(placeholder)}" ${required ? "required" : ""} ${maxlength ? `maxlength="${maxlength}"` : ""} ${min != null ? `min="${min}"` : ""} ${step != null ? `step="${step}"` : ""} ${describedBy ? `aria-describedby="${escapeAttr(describedBy)}"` : ""} ${error ? 'aria-invalid="true"' : ""} autocomplete="${escapeAttr(autocomplete)}" />${help ? `<small id="${escapeAttr(helpId)}">${escapeHtml(help)}</small>` : ""}${error ? `<small id="${escapeAttr(errorId)}" class="field-error">${escapeHtml(error)}</small>` : ""}</label>`;
 }
 
 export function textarea({

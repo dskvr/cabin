@@ -58,7 +58,7 @@ function identifier(value: unknown): value is string {
 }
 
 function activity(value: unknown): value is WeekActivityV1 {
-  return isRecord(value) && identifier(value.id) && (value.day === "tuesday" || value.day === "wednesday") && text(value.name, 1, 160) && calendarDate(value.date) && time(value.starts_at) && time(value.ends_at) && value.starts_at <= value.ends_at && text(value.location, 1, 240) && (value.link === null || typeof value.link === "string" && normalizeOptionalUrl(value.link) === value.link);
+  return isRecord(value) && identifier(value.id) && (value.day === "tuesday" || value.day === "wednesday") && text(value.name, 1, 160) && calendarDate(value.date) && time(value.starts_at) && time(value.ends_at) && value.starts_at < value.ends_at && text(value.location, 1, 240) && (value.link === null || typeof value.link === "string" && normalizeOptionalUrl(value.link) === value.link);
 }
 
 function proposalField(value: unknown): value is ProposalFieldV1 {

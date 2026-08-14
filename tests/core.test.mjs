@@ -36,10 +36,15 @@ import {
 } from "../dist/assets/domain/timer.js";
 import {
   addActivity,
+  addProposalField,
   moveActivity,
+  moveProposalField,
   removeActivity,
+  removeProposalField,
   seedWeekConfiguration,
   updateActivity,
+  updateProposalField,
+  validateProposalAnswers,
   validateWeekConfiguration,
 } from "../dist/assets/domain/week.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
@@ -595,4 +600,27 @@ test("week activities retain stable identities, order, valid timing, and duratio
   assert.equal(validateWeekConfiguration({ ...removed, presentation_minutes: 1.5 }).valid, false);
   assert.deepEqual(calculateTimer(60_000, { presentationMs: 60_000, questionMs: 120_000 }), { phase: "questions", remainingMs: 120_000 });
   assert.deepEqual(splitPresentationTime(181_000, { presentationMs: 60_000, questionMs: 120_000 }), { presentation_ms: 60_000, questions_ms: 120_000, overtime_ms: 1_000, total_ms: 181_000 });
+});
+
+test("proposal fields keep answer association through rename, reorder, requiredness, and removal", () => {
+  const slot = { cohort_id: "madeira-2026", week_number: 3, start_date: "2026-01-13", end_date: "2026-01-19", captain_pubkey: key(91) };
+  const seeded = seedWeekConfiguration(slot, { theme: "Nostr in Madeira", public_description: "A complete week." });
+  const [title, description] = seeded.proposal_fields;
+  assert.ok(title && description);
+  const answers = { [title.id]: "Cabin maps", [description.id]: "A private planning graph" };
+  const renamed = updateProposalField(seeded, title.id, { label: "Project name" });
+  const reordered = moveProposalField(renamed, description.id, -1);
+  const optional = updateProposalField(reordered, description.id, { required: false });
+  assert.equal(optional.proposal_fields[1]?.id, title.id, "rename and reorder retain the original ID");
+  assert.deepEqual(validateProposalAnswers(optional.proposal_fields, answers), {});
+  assert.deepEqual(validateProposalAnswers(optional.proposal_fields, { [description.id]: "optional description" }), { [title.id]: "This field is required." });
+  assert.equal(moveProposalField(optional, description.id, -1), optional, "boundary move is a no-op");
+  assert.equal(removeProposalField(optional, "absent"), optional, "absent removal is a no-op");
+  const added = addProposalField(optional);
+  assert.equal(new Set(added.proposal_fields.map((field) => field.id)).size, added.proposal_fields.length, "add allocates one unique stable ID");
+  const removed = removeProposalField(added, description.id);
+  assert.equal(removed.proposal_fields.some((field) => field.id === title.id), true, "removal only affects the selected field");
+  assert.equal(validateWeekConfiguration({ ...removed, proposal_fields: [] }).valid, false, "empty schemas block publication");
+  assert.equal(validateWeekConfiguration({ ...removed, proposal_fields: [{ ...title, label: "" }] }).valid, false, "empty labels block publication");
+  assert.equal(validateWeekConfiguration({ ...removed, proposal_fields: [{ ...title, label: "x".repeat(161) }] }).valid, false, "overlong labels block publication");
 });
