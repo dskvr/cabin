@@ -98,7 +98,12 @@ test("shipped cohort manifest parses and resolves its assigned captain", () => {
 test("public navigation exposes a five-day week board with Friday highlighted", () => {
   const appSource = readFileSync(new URL("../src/app/App.ts", import.meta.url), "utf8");
   const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  const logo = readFileSync(new URL("../public/sovereign-engineering-logo.svg", import.meta.url), "utf8");
 
+  assert.match(appSource, /class="brand-logo" src="\.\/sovereign-engineering-logo\.svg"/);
+  assert.match(appSource, /class="brand-week">Week \$\{headerWeek\.week_number\}/);
+  assert.match(styles, /\.brand-week \{[\s\S]*color: var\(--yellow\)/);
+  assert.match(logo, /viewBox="0 0 350\.0407 405\.535"/);
   assert.match(appSource, /WEEK_DAYS\.map/);
   assert.match(appSource, /#renderWeekDay\(weekNumber: number, day: WeekDay\)/);
   assert.match(appSource, /week_configuration_event_id: week\.event\.id/);

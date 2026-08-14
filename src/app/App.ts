@@ -458,6 +458,7 @@ export class DemoDayApp {
     const page = this.#renderRoute();
     const signingPubkey = this.#signingPubkey();
     const currentProfile = signingPubkey ? this.#profile(signingPubkey) : null;
+    const headerWeek = this.#currentPublicWeek();
     const connected = this.#repository.connectedRelays().length;
     const pending = this.#repository.pendingCount();
     const motionRouteKey = this.#route.name === "session" || this.#route.name === "display"
@@ -480,9 +481,9 @@ export class DemoDayApp {
         <canvas class="relay-field" aria-hidden="true"></canvas>
         ${this.#route.name === "display" ? "" : `
           <header class="topbar">
-            <a class="brand" href="#/" aria-label="Sovereign Engineering Demo Day home">
-              <span class="brand-mark">SE</span>
-              <span><strong>Sovereign Engineering</strong></span>
+            <a class="brand" href="#/" aria-label="Sovereign Engineering Captain's Cabin home">
+              <img class="brand-logo" src="./sovereign-engineering-logo.svg" alt="" />
+              <span class="brand-copy"><strong>Sovereign Engineering</strong>${headerWeek ? `<span class="brand-week">Week ${headerWeek.week_number}</span>` : ""}</span>
             </a>
             <div class="status-cluster" aria-label="Connection status">
               <span class="relay-status ${connected > 0 ? "online" : "offline"}"><i></i>${connected}/${DEFAULT_RELAYS.length} relays</span>

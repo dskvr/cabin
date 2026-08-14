@@ -177,6 +177,30 @@ code,
   text-decoration: none;
 }
 
+.brand-logo {
+  width: 42px;
+  height: 50px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  filter: drop-shadow(0 0 14px rgba(97, 233, 255, .2));
+}
+
+.brand-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.brand-week {
+  color: var(--yellow);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: .76rem;
+  font-weight: 900;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .brand-mark {
   display: grid;
   place-items: center;
@@ -2672,6 +2696,7 @@ footer a:hover {
 }
 :root[data-theme="light"] .relay-field { opacity: .38; }
 :root[data-theme="light"] .brand-mark { color: #fff; box-shadow: 0 10px 28px rgba(74, 48, 142, .12), 0 0 25px rgba(8, 127, 159, .12); }
+:root[data-theme="light"] .brand-logo { filter: invert(1) drop-shadow(0 0 10px rgba(8, 127, 159, .12)); }
 :root[data-theme="light"] .relay-status,
 :root[data-theme="light"] .pending-status,
 :root[data-theme="light"] .identity-chip,
