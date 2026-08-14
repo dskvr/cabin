@@ -186,6 +186,21 @@ export function formatRenderedTimer(
   return formatTimer(nowMs - startedAtMs, { presentationMs, questionMs });
 }
 
+/** Observe a detached task without allowing a background failure to escape as an unhandled rejection. */
+export async function settleBackgroundTask(
+  task: Promise<unknown>,
+  onFailure: (error: unknown) => void,
+  onSettled?: () => void,
+): Promise<void> {
+  try {
+    await task;
+  } catch (error) {
+    onFailure(error);
+  } finally {
+    onSettled?.();
+  }
+}
+
 function chooseLatest(items: RelayEvent[]): RelayEvent | null {
   let selected: RelayEvent | null = null;
   for (const item of items) {
@@ -256,6 +271,7 @@ export class DemoDayApp {
   #weekLoadErrors = new Map<string, string>();
   #weekPublicationError: string | null = null;
   #requestedProfiles = new Set<string>();
+  #failedProfileLoads = new Set<string>();
   #sessionUnsubscribe: (() => void) | null = null;
   #zapUnsubscribe: (() => void) | null = null;
   #zapSubscriptionKey = "";
@@ -303,8 +319,8 @@ export class DemoDayApp {
 
   start(): void {
     this.#repository.start();
-    this.#repository.onChange(() => this.#requestBackgroundRender());
-    this.#repository.transport.onConnectionChange(() => this.#requestBackgroundRender());
+    this.#repository.onChange(() => this.#retryFailedProfileLoads());
+    this.#repository.transport.onConnectionChange(() => this.#retryFailedProfileLoads());
     globalThis.addEventListener("hashchange", this.#onRouteChanged);
     globalThis.addEventListener("sedd-identity-changed", () => this.requestRender());
     this.#root.addEventListener("submit", this.#onSubmit);
@@ -1043,14 +1059,31 @@ export class DemoDayApp {
 
   #profile(pubkey: string): ReturnType<typeof profileView> {
     const event = this.#repository.getProfile(pubkey);
-    if (!event && !this.#requestedProfiles.has(pubkey)) {
+    if (!event && !this.#requestedProfiles.has(pubkey) && !this.#failedProfileLoads.has(pubkey)) {
       this.#requestedProfiles.add(pubkey);
-      void this.#repository.ensureProfile(pubkey).finally(() => {
-        this.#requestedProfiles.delete(pubkey);
-        this.requestRender();
-      });
+      void settleBackgroundTask(
+        this.#repository.ensureProfile(pubkey),
+        () => {
+          this.#failedProfileLoads.add(pubkey);
+          this.#reportBackgroundRelayFailure();
+        },
+        () => {
+          this.#requestedProfiles.delete(pubkey);
+          this.requestRender();
+        },
+      );
     }
     return profileView(event, pubkey);
+  }
+
+  #retryFailedProfileLoads(): void {
+    this.#failedProfileLoads.clear();
+    this.#requestBackgroundRender();
+  }
+
+  #reportBackgroundRelayFailure(): void {
+    this.#notice = { kind: "error", text: "A background relay request failed. Check your connection and try again." };
+    this.requestRender();
   }
 
   #draft(scope: string, name: string, fallback = ""): string {
@@ -1167,7 +1200,12 @@ export class DemoDayApp {
     this.#zapUnsubscribe?.();
     this.#zapSubscriptionKey = key;
     this.#zapUnsubscribe = this.#repository.subscribeZaps(entries);
-    if (entries.length > 0) void this.#repository.refreshZaps(entries);
+    if (entries.length > 0) {
+      void settleBackgroundTask(
+        this.#repository.refreshZaps(entries),
+        () => this.#reportBackgroundRelayFailure(),
+      );
+    }
   }
 
   #ensureRouteData(): void {

@@ -141,6 +141,25 @@ test("a session preserves its published 1+2 timing snapshot through the periodic
   }
 });
 
+test("detached relay work reports failures and settles without an unhandled rejection", async () => {
+  const { settleBackgroundTask } = await import("../dist/assets/app/App.js");
+  const failure = new Error("relay unavailable");
+  let reported = null;
+  let settled = false;
+
+  await settleBackgroundTask(
+    Promise.reject(failure),
+    (error) => { reported = error; },
+    () => { settled = true; },
+  );
+
+  assert.equal(reported, failure);
+  assert.equal(settled, true);
+  const source = readFileSync(new URL("../src/app/App.ts", import.meta.url), "utf8");
+  assert.match(source, /settleBackgroundTask\(\s*this\.#repository\.ensureProfile\(pubkey\)/);
+  assert.match(source, /settleBackgroundTask\(\s*this\.#repository\.refreshZaps\(entries\)/);
+});
+
 test("week configuration rejects invalid boundaries and detects a stale revision base", async () => {
   const captainSecret = key(74);
   const captainPubkey = getPublicKey(captainSecret);
