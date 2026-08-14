@@ -7,10 +7,10 @@
 
 ### Week Configuration
 
-- [ ] **WEEK-01**: Captain can create a week from editable Tuesday-talk and Wednesday-workshop templates
+- [x] **WEEK-01**: Captain can create a week from editable Tuesday-talk and Wednesday-workshop templates
 - [ ] **WEEK-02**: Captain can add, remove, rename, and reorder activities within a week
 - [ ] **WEEK-03**: Captain can set each activity's date, time, location, and link, with all v1 scheduling interpreted in `Atlantic/Madeira`
-- [ ] **WEEK-04**: Captain can set the week's theme and public descriptive information
+- [x] **WEEK-04**: Captain can set the week's theme and public descriptive information
 
 ### Demo Day Timing
 
@@ -31,8 +31,8 @@
 ### Access Control
 
 - [ ] **ACES-01**: A Nostr identity not present on the participant whitelist cannot submit or amend a proposal
-- [ ] **ACES-02**: Only the designated captain can configure a week, customize intake, review proposals, assemble or publish a schedule, archive a week, or clone configuration
-- [ ] **ACES-03**: Participant and captain actions are accepted only when signed by the corresponding authorized Nostr identity
+- [x] **ACES-02**: Only the designated captain can configure a week, customize intake, review proposals, assemble or publish a schedule, archive a week, or clone configuration
+- [x] **ACES-03**: Participant and captain actions are accepted only when signed by the corresponding authorized Nostr identity
 
 ### Proposal Privacy
 
@@ -96,10 +96,10 @@ Roadmap phases are assigned during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| WEEK-01 | Phase 1 | Pending |
+| WEEK-01 | Phase 1 | Complete |
 | WEEK-02 | Phase 1 | Pending |
 | WEEK-03 | Phase 1 | Pending |
-| WEEK-04 | Phase 1 | Pending |
+| WEEK-04 | Phase 1 | Complete |
 | TIME-01 | Phase 1 | Pending |
 | TIME-02 | Phase 1 | Pending |
 | FORM-01 | Phase 1 | Pending |
@@ -108,8 +108,8 @@ Roadmap phases are assigned during roadmap creation.
 | PROP-01 | Phase 2 | Pending |
 | PROP-02 | Phase 2 | Pending |
 | ACES-01 | Phase 2 | Pending |
-| ACES-02 | Phase 1 | Pending |
-| ACES-03 | Phase 1 | Pending |
+| ACES-02 | Phase 1 | Complete |
+| ACES-03 | Phase 1 | Complete |
 | PRIV-01 | Phase 2 | Pending |
 | PRIV-02 | Phase 2 | Pending |
 | SCHD-01 | Phase 3 | Pending |
@@ -123,6 +123,7 @@ Roadmap phases are assigned during roadmap creation.
 | LIFE-03 | Phase 4 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 25 total
 - Mapped to phases: 25
 - Unmapped: 0
