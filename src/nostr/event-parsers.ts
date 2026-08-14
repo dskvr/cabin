@@ -20,7 +20,8 @@ import {
 import { isAssignedCaptain } from "../domain/authorization.js";
 import { weekAddress, weekD, type ProvisionedWeek } from "../domain/cohort.js";
 import { MAX_WEEK_CONFIGURATION_CONTENT_LENGTH, parseWeekConfiguration, type WeekConfigurationV1 } from "../domain/week.js";
-import { getPublicKey, nip44Decrypt, verifyEvent } from "./crypto.js";
+import { verifyEvent } from "./crypto.js";
+import { localSigner, type EventSigner } from "./signer.js";
 
 const MAX_PRIVATE_ENVELOPE_LENGTH = 65_536;
 
@@ -29,10 +30,10 @@ function singleTag(event: NostrEvent, name: string): string | null {
   return tags.length === 1 ? tags[0]?.[1] ?? null : null;
 }
 
-async function unwrapGift(event: NostrEvent, recipientSecretKeyHex: string): Promise<NostrEvent | null> {
-  if (event.kind !== GIFT_WRAP_KIND || event.content.length > MAX_PRIVATE_ENVELOPE_LENGTH || singleTag(event, "p") !== getPublicKey(recipientSecretKeyHex) || !(await verifyEvent(event))) return null;
+async function unwrapGift(event: NostrEvent, signer: EventSigner): Promise<NostrEvent | null> {
+  if (event.kind !== GIFT_WRAP_KIND || event.content.length > MAX_PRIVATE_ENVELOPE_LENGTH || singleTag(event, "p") !== signer.publicKey || !(await verifyEvent(event))) return null;
   try {
-    const plaintext = await nip44Decrypt(event.content, recipientSecretKeyHex, event.pubkey);
+    const plaintext = await signer.decryptNip44(event.pubkey, event.content);
     if (plaintext.length > MAX_PRIVATE_ENVELOPE_LENGTH) return null;
     const inner = JSON.parse(plaintext) as unknown;
     return typeof inner === "object" && inner !== null && await verifyEvent(inner as NostrEvent) ? inner as NostrEvent : null;
@@ -44,7 +45,13 @@ async function unwrapGift(event: NostrEvent, recipientSecretKeyHex: string): Pro
 export async function parsePrivateProposalGift({
   event, recipientSecretKeyHex, slot, configuration, configurationEventId,
 }: { event: NostrEvent; recipientSecretKeyHex: string; slot: ProvisionedWeek; configuration: WeekConfigurationV1; configurationEventId: string }): Promise<{ event: NostrEvent; inner: NostrEvent; proposal: PrivateProposal } | null> {
-  const inner = await unwrapGift(event, recipientSecretKeyHex);
+  return parsePrivateProposalGiftWithSigner({ event, signer: localSigner(recipientSecretKeyHex), slot, configuration, configurationEventId });
+}
+
+export async function parsePrivateProposalGiftWithSigner({
+  event, signer, slot, configuration, configurationEventId,
+}: { event: NostrEvent; signer: EventSigner; slot: ProvisionedWeek; configuration: WeekConfigurationV1; configurationEventId: string }): Promise<{ event: NostrEvent; inner: NostrEvent; proposal: PrivateProposal } | null> {
+  const inner = await unwrapGift(event, signer);
   if (!inner || inner.kind !== PRIVATE_PROPOSAL_KIND || singleTag(inner, "t") !== "captains-cabin-private-proposal" || inner.content.length > MAX_WEEK_CONFIGURATION_CONTENT_LENGTH) return null;
   const proposal = parsePrivateProposal(safeJson(inner.content));
   if (!proposal || validateProposalForWeek(proposal, inner.pubkey, slot, configuration, configurationEventId).length) return null;
@@ -52,7 +59,11 @@ export async function parsePrivateProposalGift({
 }
 
 export async function parsePrivateScheduleGift(event: NostrEvent, recipientSecretKeyHex: string, slot: ProvisionedWeek): Promise<{ event: NostrEvent; inner: NostrEvent; schedule: PrivateSchedule } | null> {
-  const inner = await unwrapGift(event, recipientSecretKeyHex);
+  return parsePrivateScheduleGiftWithSigner(event, localSigner(recipientSecretKeyHex), slot);
+}
+
+export async function parsePrivateScheduleGiftWithSigner(event: NostrEvent, signer: EventSigner, slot: ProvisionedWeek): Promise<{ event: NostrEvent; inner: NostrEvent; schedule: PrivateSchedule } | null> {
+  const inner = await unwrapGift(event, signer);
   if (!inner || inner.kind !== PRIVATE_SCHEDULE_KIND || inner.pubkey !== slot.captain_pubkey || singleTag(inner, "t") !== "captains-cabin-private-schedule" || inner.content.length > MAX_WEEK_CONFIGURATION_CONTENT_LENGTH) return null;
   const schedule = parsePrivateSchedule(safeJson(inner.content));
   return schedule && schedule.cohort_id === slot.cohort_id && schedule.week_number === slot.week_number ? { event, inner, schedule } : null;

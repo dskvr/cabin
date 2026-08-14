@@ -1,5 +1,5 @@
 import type { ProvisionedWeek } from "./cohort.js";
-import { parseWeekConfiguration, type ProposalFieldV1, type WeekActivityV1, type WeekConfigurationV1 } from "./week.js";
+import { parseWeekConfiguration, seedWeekConfiguration, type ProposalFieldV1, type WeekActivityV1, type WeekConfigurationV1 } from "./week.js";
 import { isRecord, isValidEventId, isValidHexPubkey } from "./utils.js";
 
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -229,11 +229,12 @@ export function cloneWeekConfiguration(
   freshId: () => string,
 ): WeekConfigurationV1 {
   const makeId = (prefix: string): string => `${prefix}-${freshId()}`.slice(0, 64).replace(/[^a-z0-9-]/g, "-");
+  const targetDates = new Map(seedWeekConfiguration(target).activities.map((activity) => [activity.day, activity.date]));
   return {
     v: 1, type: "week-configuration", cohort_id: target.cohort_id, week_number: target.week_number,
     timezone: "Atlantic/Madeira", status: "setup", intake_open: false,
     theme: source.theme, public_description: source.public_description,
-    activities: source.activities.map((activity) => ({ ...activity, id: makeId(`w${target.week_number}-activity`), date: activity.day === "tuesday" ? target.start_date : target.end_date })),
+    activities: source.activities.map((activity) => ({ ...activity, id: makeId(`w${target.week_number}-activity`), date: targetDates.get(activity.day) ?? activity.date })),
     proposal_fields: source.proposal_fields.map((field) => ({ ...field, id: makeId(`w${target.week_number}-field`) })),
     presentation_minutes: source.presentation_minutes, question_minutes: source.question_minutes, base_event_id: null,
   };

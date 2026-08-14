@@ -65,12 +65,13 @@ import { decodeNpub, npubEncode } from "../nostr/bech32.js";
 import { getPublicKey } from "../nostr/crypto.js";
 import {
   buildEntryEvent,
-  buildPrivateProposalEvents,
-  buildPrivateScheduleEvent,
-  buildPublicScheduleEvent,
+  buildPrivateProposalEventsWithSigner,
+  buildPrivateScheduleEventWithSigner,
+  buildPublicScheduleEventWithSigner,
   buildSessionEvent,
-  buildWeekArchiveEvent,
+  buildWeekArchiveEventWithSigner,
   buildWeekConfigurationEvent,
+  buildWeekConfigurationEventWithSigner,
   createPresenterZapRequest,
 } from "../nostr/event-builders.js";
 import { parseParticipantEntryEvent } from "../nostr/event-parsers.js";
@@ -90,6 +91,7 @@ import {
   profileView,
 } from "../nostr/profiles.js";
 import type { NostrRepository } from "../nostr/repository.js";
+import { connectNip07, forgetNip07, Nip07Signer, rememberedNip07PublicKey, type EventSigner } from "../nostr/signer.js";
 import {
   collectZapReceipts,
   fetchLnurlPayMetadata,
@@ -319,11 +321,31 @@ export class DemoDayApp {
   #announcedBusy = "";
   #announcedProfileSearch = "";
   #theme: ColorTheme = storedTheme();
+  #nip07Pubkey: string | null = rememberedNip07PublicKey();
 
   constructor(root: HTMLElement, repository: NostrRepository) {
     this.#root = root;
     this.#repository = repository;
     this.#applyTheme();
+  }
+
+  #cabinSigner(): EventSigner {
+    if (!this.#nip07Pubkey) throw new Error("Login with NIP-07 to continue");
+    return new Nip07Signer(this.#nip07Pubkey);
+  }
+
+  #signingPubkey(): string | null {
+    return this.#nip07Pubkey;
+  }
+
+  #clearCabinIdentityState(): void {
+    this.#weekResolved.clear();
+    this.#weekLoading.clear();
+    this.#weekLoadErrors.clear();
+    this.#proposalInbox.clear();
+    this.#privateSchedules.clear();
+    this.#cabinResolved.clear();
+    this.#cabinLoading.clear();
   }
 
   #applyTheme(): void {
@@ -397,8 +419,8 @@ export class DemoDayApp {
         }
       : null;
     const page = this.#renderRoute();
-    const identity = loadIdentity();
-    const currentProfile = identity ? this.#profile(identity.public_key_hex) : null;
+    const signingPubkey = this.#signingPubkey();
+    const currentProfile = signingPubkey ? this.#profile(signingPubkey) : null;
     const connected = this.#repository.connectedRelays().length;
     const pending = this.#repository.pendingCount();
     const motionRouteKey = this.#route.name === "session" || this.#route.name === "display"
@@ -427,7 +449,7 @@ export class DemoDayApp {
               <span class="relay-status ${connected > 0 ? "online" : "offline"}"><i></i>${connected}/${DEFAULT_RELAYS.length} relays</span>
               ${pending ? `<span class="pending-status">${pending} pending</span>` : ""}
               ${this.#themeSwitcher()}
-              ${identity && currentProfile ? profileComponent({ picture: currentProfile.picture, pubkey: identity.public_key_hex, name: currentProfile.name, size: "sm", className: "identity-chip" }) : ""}
+              ${signingPubkey && currentProfile ? `${profileComponent({ picture: currentProfile.picture, pubkey: signingPubkey, name: currentProfile.name, size: "sm", className: "identity-chip" })}<button class="button button-quiet button-small" data-action="disconnect-nip07">Logout</button>` : `<button class="button button-primary button-small" data-action="connect-nip07">Login with NIP-07</button>`}
             </div>
           </header>
         `}
@@ -546,17 +568,18 @@ export class DemoDayApp {
 
   #renderWeekConfiguration(): string {
     const manifest = parseCohortManifest(COHORT_MANIFEST);
-    const identity = getOrCreateIdentity();
     if (!manifest) {
-      return `<section class="panel" aria-live="polite"><span class="spinner"></span> Loading week configuration…</section>`;
+      return `<section class="panel" role="alert"><h2>Cohort configuration is invalid</h2><p>Check the cohort ID, dates, starting week, captain assignments, and npubs, then rebuild the site.</p></section>`;
     }
-    const captainSlot = weekForCaptain(manifest, identity.public_key_hex);
-    const participantSlots = deriveProvisionedWeeks(manifest).filter((candidate) => candidate.participant_allowlist.includes(identity.public_key_hex));
+    const signingPubkey = this.#signingPubkey();
+    if (!signingPubkey) return `<section class="panel"><h2>Captain’s Cabin</h2><p>Login with NIP-07 to continue.</p></section>`;
+    const captainSlot = weekForCaptain(manifest, signingPubkey);
+    const participantSlots = deriveProvisionedWeeks(manifest).filter((candidate) => candidate.participant_allowlist.includes(signingPubkey));
     const today = new Date().toISOString().slice(0, 10);
     const slot = captainSlot ?? participantSlots.find((candidate) => candidate.start_date <= today && today <= candidate.end_date) ?? participantSlots[0] ?? null;
-    if (!slot) return `<section class="panel"><h2>Captain’s Cabin</h2><p>This signing identity is neither an assigned captain nor a whitelisted participant.</p><p><code>${escapeHtml(identity.npub)}</code></p></section>`;
+    if (!slot) return `<section class="panel"><h2>Captain’s Cabin</h2><p>This account is not assigned as a captain or participant.</p></section>`;
     const persisted = this.#repository.getWeek(slot);
-    const seed = persisted?.configuration ?? seedWeekConfiguration(slot, { theme: "Week ${slot.week_number}", public_description: "" });
+    const seed = persisted?.configuration ?? seedWeekConfiguration(slot, { theme: `Week ${slot.week_number}`, public_description: "" });
     const scope = `week-${slot.week_number}`;
     if (this.#weekLoading.has(scope)) {
       return `<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading week configuration…</section>`;
@@ -569,11 +592,11 @@ export class DemoDayApp {
       void this.#refreshWeekConfiguration(slot);
       return `<section class="panel week-state-panel" aria-live="polite"><span class="spinner"></span> Loading week configuration…</section>`;
     }
-    if (!persisted) return `<section class="panel"><h2>Captain’s Cabin</h2><p>The captain has not published this week yet.</p></section>`;
-    if (!captainSlot) {
-      return this.#renderProposalWorkspace(slot, persisted.event.id, persisted.configuration, identity.public_key_hex);
+    if (!persisted && !captainSlot) return `<section class="panel"><h2>Captain’s Cabin</h2><p>The captain has not published this week yet.</p></section>`;
+    if (persisted && !captainSlot) {
+      return this.#renderProposalWorkspace(slot, persisted.event.id, persisted.configuration, signingPubkey);
     }
-    if (persisted.configuration.status === "completed") {
+    if (persisted?.configuration.status === "completed") {
       const publication = this.#repository.weekArchive(slot)?.archive.public_schedule ?? this.#repository.publicSchedule(slot)?.schedule;
       return `<section class="narrow-page week-workspace"><span class="eyebrow">Archived week ${slot.week_number}</span><h1>${escapeHtml(persisted.configuration.theme)}</h1><section class="panel"><h2>Read-only archive</h2><p>${escapeHtml(persisted.configuration.public_description)}</p><p>This completed week cannot be changed.</p>${publication ? `<p>${publication.activities.reduce((count, item) => count + item.sessions.length, 0)} published sessions.</p>` : ""}</section></section>`;
     }
@@ -618,7 +641,7 @@ export class DemoDayApp {
     })() : "";
     const readinessItems = [["Week details", "week_details"], ["Tuesday activities", "tuesday_activities"], ["Wednesday activities", "wednesday_activities"], ["Proposal form", "proposal_form"], ["Demo Day timing", "demo_day_timing"]] as const;
     const status = draftChanged ? "Changes ready to publish" : persisted ? "Setup published — intake closed" : "Draft";
-    void this.#loadCabinData(slot, persisted.event.id, persisted.configuration, identity.secret_key_hex);
+    if (persisted) void this.#loadCabinData(slot, persisted.event.id, persisted.configuration, this.#cabinSigner());
     return `<section class="narrow-page week-workspace"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>Week ${slot.week_number}</h1><p>${escapeHtml(slot.start_date)} – ${escapeHtml(slot.end_date)} · Atlantic/Madeira</p><p>Assigned captain: ${escapeHtml(captain.name)}</p><p class="week-status">${status}</p>${draftChanged ? `<p class="week-local-status" aria-live="polite">Changes saved locally</p>` : ""}
       ${confirmation}
       ${this.#weekPublicationError ? `<section class="notice notice-error week-notice" role="alert"><p>${escapeHtml(this.#weekPublicationError)}</p><button class="button button-secondary" data-action="retry-week-publication">Try again</button></section>` : ""}
@@ -627,7 +650,7 @@ export class DemoDayApp {
       <section class="week-subsection"><h2>Proposal form</h2>${fields || `<div class="empty-state compact"><h3>No proposal fields yet</h3><p>Add a field before publishing this week.</p></div>`}<button class="button button-secondary" data-action="add-week-field" data-week-scope="${escapeAttr(scope)}">Add field</button></section>
       <section class="week-subsection"><h2>Demo Day timing</h2><label class="field"><span>Presentation duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:presentation_minutes" value="${draft.presentation_minutes}" /></label><label class="field"><span>Question duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:question_minutes" value="${draft.question_minutes}" /></label><p>Demo Day timing: ${draft.presentation_minutes}:00 presentation + ${draft.question_minutes}:00 questions.</p></section>
       <section class="panel readiness-panel"><h2>Readiness</h2>${readinessItems.map(([label, key]) => readiness.sections[key].length ? `<button class="readiness-action needs-attention" data-action="focus-week-invalid" data-week-scope="${escapeAttr(scope)}" data-week-section="${key}"><strong>${escapeHtml(label)}:</strong> Needs attention</button>` : `<p class="ready"><strong>${escapeHtml(label)}:</strong> Ready</p>`).join("")} ${readiness.valid ? "" : "<p>This section needs attention. Complete the highlighted fields to publish this week.</p>"}<div class="form-actions"><button class="button button-secondary" data-action="preview-week" data-week-scope="${escapeAttr(scope)}">Preview week</button><button class="button button-primary" type="submit" ${readiness.valid ? "" : "disabled"}>${persisted ? "Publish changes" : "Create week"}</button></div></section></form>
-      ${this.#renderCaptainCabin(slot, persisted.event.id, persisted.configuration)}
+      ${persisted ? this.#renderCaptainCabin(slot, persisted.event.id, persisted.configuration) : ""}
     </section>`;
   }
 
@@ -1591,7 +1614,7 @@ export class DemoDayApp {
     const identity = loadIdentity();
     if (!identity || !this.#identityReady(identity)) throw new Error("Complete profile import first");
     const manifest = parseCohortManifest(COHORT_MANIFEST);
-    const slot = manifest ? weekForCaptain(manifest, identity.public_key_hex) : null;
+    const slot = manifest && this.#nip07Pubkey ? weekForCaptain(manifest, this.#nip07Pubkey) : null;
     if (!slot) throw new Error("This identity is not assigned a week to configure.");
     const week = await this.#repository.refreshWeek(slot);
     if (!week) throw new Error("Publish this week's configuration before creating a demo day.");
@@ -2205,15 +2228,15 @@ export class DemoDayApp {
     });
   }
 
-  async #loadCabinData(slot: ProvisionedWeek, configurationEventId: string, configuration: WeekConfigurationV1, secretKeyHex: string): Promise<void> {
+  async #loadCabinData(slot: ProvisionedWeek, configurationEventId: string, configuration: WeekConfigurationV1, signer: EventSigner): Promise<void> {
     const scope = `cabin-${slot.week_number}`;
-    const loadKey = `${scope}:${configurationEventId}:${getPublicKey(secretKeyHex)}`;
+    const loadKey = `${scope}:${configurationEventId}:${signer.publicKey}`;
     if (this.#cabinLoading.has(scope) || this.#cabinResolved.has(loadKey)) return;
     this.#cabinLoading.add(scope);
     try {
-      this.#proposalInbox.set(scope, await this.#repository.privateProposals({ slot, configuration, configurationEventId, recipientSecretKeyHex: secretKeyHex }));
-      if (getPublicKey(secretKeyHex) === slot.captain_pubkey) {
-        const stored = await this.#repository.privateSchedule(slot, secretKeyHex);
+      this.#proposalInbox.set(scope, await this.#repository.privateProposalsWithSigner({ slot, configuration, configurationEventId, signer }));
+      if (signer.publicKey === slot.captain_pubkey) {
+        const stored = await this.#repository.privateScheduleWithSigner(slot, signer);
         if (stored) this.#privateSchedules.set(scope, stored);
         const manifest = parseCohortManifest(COHORT_MANIFEST);
         if (manifest) for (const prior of deriveProvisionedWeeks(manifest).filter((item) => item.week_number < slot.week_number)) {
@@ -2232,21 +2255,21 @@ export class DemoDayApp {
   }
 
   async #submitCabinProposal(data: FormData): Promise<void> {
-    const identity = loadIdentity();
     const manifest = parseCohortManifest(COHORT_MANIFEST);
-    if (!identity || !manifest) throw new Error("Signing identity is unavailable");
-    const participantSlots = deriveProvisionedWeeks(manifest).filter((item) => item.participant_allowlist.includes(identity.public_key_hex));
+    if (!manifest) throw new Error("Signing identity is unavailable");
+    const signer = this.#cabinSigner();
+    const participantSlots = deriveProvisionedWeeks(manifest).filter((item) => item.participant_allowlist.includes(signer.publicKey));
     const today = new Date().toISOString().slice(0, 10);
     const slot = participantSlots.find((item) => item.start_date <= today && today <= item.end_date) ?? participantSlots[0];
     if (!slot) throw new Error("This identity is not whitelisted");
     const latest = await this.#repository.refreshWeek(slot);
     if (!latest || !latest.configuration.intake_open || latest.configuration.status !== "active") throw new Error("Proposal intake is closed");
     const scope = `cabin-${slot.week_number}`;
-    const own = this.#proposalInbox.get(scope)?.find((item) => item.proposal.author_pubkey === identity.public_key_hex)?.proposal;
+    const own = this.#proposalInbox.get(scope)?.find((item) => item.proposal.author_pubkey === signer.publicKey)?.proposal;
     const answers = proposalFieldAnswers(latest.configuration.proposal_fields, Object.fromEntries(latest.configuration.proposal_fields.map((item) => [item.id, clampText(String(data.get(`answer:${item.id}`) ?? ""), 4_000)])));
     const now = Date.now();
-    const proposal: PrivateProposal = { v: 1, type: "captains-cabin-proposal", proposal_id: own?.proposal_id ?? proposalIdFor(slot, identity.public_key_hex), cohort_id: slot.cohort_id, week_number: slot.week_number, configuration_event_id: latest.event.id, author_pubkey: identity.public_key_hex, answers, created_at_ms: own?.created_at_ms ?? now, updated_at_ms: now };
-    const events = await buildPrivateProposalEvents({ proposal, slot, configuration: latest.configuration, configurationEventId: latest.event.id, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(own ? Math.floor(own.updated_at_ms / 1_000) : undefined) });
+    const proposal: PrivateProposal = { v: 1, type: "captains-cabin-proposal", proposal_id: own?.proposal_id ?? proposalIdFor(slot, signer.publicKey), cohort_id: slot.cohort_id, week_number: slot.week_number, configuration_event_id: latest.event.id, author_pubkey: signer.publicKey, answers, created_at_ms: own?.created_at_ms ?? now, updated_at_ms: now };
+    const events = await buildPrivateProposalEventsWithSigner({ proposal, slot, configuration: latest.configuration, configurationEventId: latest.event.id, signer, createdAt: nextCreatedAt(own ? Math.floor(own.updated_at_ms / 1_000) : undefined) });
     await this.#repository.publish(events.captain);
     this.#proposalInbox.set(scope, [{ event: events.captain, inner: events.inner, proposal }]);
     this.#notice = { kind: "success", text: own ? "Private proposal updated." : "Private proposal submitted." };
@@ -2254,8 +2277,7 @@ export class DemoDayApp {
 
   #saveCabinPlacement(proposalId: string, data: FormData): void {
     const manifest = parseCohortManifest(COHORT_MANIFEST);
-    const identity = loadIdentity();
-    const slot = manifest && identity ? weekForCaptain(manifest, identity.public_key_hex) : null;
+    const slot = manifest && this.#nip07Pubkey ? weekForCaptain(manifest, this.#nip07Pubkey) : null;
     if (!slot) return;
     const scope = `cabin-${slot.week_number}`;
     const stored = this.#privateSchedules.get(scope);
@@ -2266,22 +2288,22 @@ export class DemoDayApp {
     this.requestRender();
   }
 
-  #captainCabinContext(): { identity: LocalIdentityV1; slot: ProvisionedWeek; week: NonNullable<ReturnType<NostrRepository["getWeek"]>>; scope: string } {
-    const identity = loadIdentity();
+  #captainCabinContext(): { signer: EventSigner; slot: ProvisionedWeek; week: NonNullable<ReturnType<NostrRepository["getWeek"]>>; scope: string } {
     const manifest = parseCohortManifest(COHORT_MANIFEST);
-    const slot = identity && manifest ? weekForCaptain(manifest, identity.public_key_hex) : null;
+    const signer = this.#cabinSigner();
+    const slot = manifest ? weekForCaptain(manifest, signer.publicKey) : null;
     const week = slot ? this.#repository.getWeek(slot) : null;
-    if (!identity || !slot || !week) throw new Error("Captain week is unavailable");
-    return { identity, slot, week, scope: `cabin-${slot.week_number}` };
+    if (!slot || !week) throw new Error("Captain week is unavailable");
+    return { signer, slot, week, scope: `cabin-${slot.week_number}` };
   }
 
   async #toggleCabinIntake(): Promise<void> {
-    const { identity, slot } = this.#captainCabinContext();
+    const { signer, slot } = this.#captainCabinContext();
     const latest = await this.#repository.refreshWeek(slot);
     if (!latest || latest.configuration.status === "completed") throw new Error("Completed weeks are read-only");
     const opening = !latest.configuration.intake_open;
     const configuration = { ...latest.configuration, status: "active" as const, intake_open: opening, base_event_id: latest.event.id };
-    const event = await buildWeekConfigurationEvent({ slot, configuration, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(latest.event.created_at) });
+    const event = await buildWeekConfigurationEventWithSigner({ slot, configuration, signer, createdAt: nextCreatedAt(latest.event.created_at) });
     await this.#repository.publish(event);
     this.#weekDrafts.set(`week-${slot.week_number}`, structuredClone(configuration));
     this.#weekDraftBaseEvents.set(`week-${slot.week_number}`, event.id);
@@ -2297,41 +2319,41 @@ export class DemoDayApp {
   }
 
   async #saveCabinSchedule(): Promise<void> {
-    const { identity, slot, week, scope } = this.#captainCabinContext();
+    const { signer, slot, week, scope } = this.#captainCabinContext();
     const stored = this.#privateSchedules.get(scope);
     if (!stored) throw new Error("Private schedule is unavailable");
     const latest = await this.#repository.refreshWeek(slot);
     if (!latest || latest.event.id !== week.event.id || stored.schedule.configuration_event_id !== latest.event.id) throw new Error("Week configuration changed. Reload the schedule before saving.");
     const schedule = { ...stored.schedule, base_event_id: stored.inner?.id ?? null, updated_at_ms: Date.now() };
-    const built = await buildPrivateScheduleEvent({ schedule, slot, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(stored.inner?.created_at) });
+    const built = await buildPrivateScheduleEventWithSigner({ schedule, slot, signer, createdAt: nextCreatedAt(stored.inner?.created_at) });
     await this.#repository.publish(built.wrap);
     this.#privateSchedules.set(scope, { event: built.wrap, inner: built.inner, schedule });
     this.#notice = { kind: "success", text: "Private schedule saved. Nothing public changed." };
   }
 
   async #publishCabinSchedule(): Promise<void> {
-    const { identity, slot, week, scope } = this.#captainCabinContext();
+    const { signer, slot, week, scope } = this.#captainCabinContext();
     const stored = this.#privateSchedules.get(scope);
     if (!stored?.inner) throw new Error("Save the private schedule before publishing");
     const latest = await this.#repository.refreshWeek(slot);
     if (!latest || latest.event.id !== week.event.id || stored.schedule.configuration_event_id !== latest.event.id) throw new Error("Week configuration changed. Save a fresh private schedule first.");
     const publication = publicScheduleProjection(stored.schedule, latest.configuration, stored.inner.id, `publication-${slot.week_number}-${randomHex(8)}`, Date.now());
-    const event = await buildPublicScheduleEvent({ schedule: publication, slot, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(this.#repository.publicSchedule(slot)?.event.created_at) });
+    const event = await buildPublicScheduleEventWithSigner({ schedule: publication, slot, signer, createdAt: nextCreatedAt(this.#repository.publicSchedule(slot)?.event.created_at) });
     await this.#repository.publish(event);
     this.#notice = { kind: "success", text: "Public schedule published deliberately." };
   }
 
   async #archiveCabinWeek(): Promise<void> {
-    const { identity, slot } = this.#captainCabinContext();
+    const { signer, slot } = this.#captainCabinContext();
     if (await this.#repository.refreshWeekArchive(slot)) throw new Error("This week is already archived and read-only");
     const latest = await this.#repository.refreshWeek(slot);
     if (!latest) throw new Error("Week configuration is unavailable");
     const completed = { ...latest.configuration, status: "completed" as const, intake_open: false, base_event_id: latest.event.id };
-    const completionEvent = await buildWeekConfigurationEvent({ slot, configuration: completed, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(latest.event.created_at) });
+    const completionEvent = await buildWeekConfigurationEventWithSigner({ slot, configuration: completed, signer, createdAt: nextCreatedAt(latest.event.created_at) });
     await this.#repository.publish(completionEvent);
     const publication = await this.#repository.refreshPublicSchedule(slot);
     const archive: WeekArchive = { v: 1, type: "captains-cabin-week-archive", archive_id: `archive-${slot.week_number}-${randomHex(8)}`, cohort_id: slot.cohort_id, week_number: slot.week_number, configuration_event_id: completionEvent.id, public_schedule_event_id: publication?.event.id ?? null, completed_at_ms: Date.now(), configuration: configurationForArchive(completed), public_schedule: publication?.schedule ?? null };
-    const event = await buildWeekArchiveEvent({ archive, slot, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(completionEvent.created_at) });
+    const event = await buildWeekArchiveEventWithSigner({ archive, slot, signer, createdAt: nextCreatedAt(completionEvent.created_at) });
     await this.#repository.publish(event);
     this.#weekArchives.set(slot.week_number, { event, archive });
     this.#notice = { kind: "success", text: "Week completed and archived read-only." };
@@ -2351,10 +2373,10 @@ export class DemoDayApp {
   }
 
   async #publishWeek(): Promise<void> {
-    const identity = loadIdentity();
     const manifest = parseCohortManifest(COHORT_MANIFEST);
-    if (!identity || !manifest) throw new Error("Week configuration is not ready");
-    const slot = weekForCaptain(manifest, identity.public_key_hex);
+    const signer = this.#cabinSigner();
+    if (!manifest) throw new Error("Week configuration is not ready");
+    const slot = weekForCaptain(manifest, signer.publicKey);
     if (!slot) throw new Error("This identity is not assigned a week to configure.");
     const scope = `week-${slot.week_number}`;
     const pending = this.#repository.pendingWeek(slot);
@@ -2379,8 +2401,8 @@ export class DemoDayApp {
     const configuration = { ...draft, base_event_id: latest?.event.id ?? null };
     const valid = parseWeekConfiguration(configuration);
     if (!valid) throw new Error("Complete every required week configuration field before publishing.");
-    const event = await buildWeekConfigurationEvent({
-      slot, configuration: valid, secretKeyHex: identity.secret_key_hex, createdAt: nextCreatedAt(latest?.event.created_at),
+    const event = await buildWeekConfigurationEventWithSigner({
+      slot, configuration: valid, signer, createdAt: nextCreatedAt(latest?.event.created_at),
     });
     await this.#repository.publish(event);
     const accepted = await this.#repository.refreshWeek(slot);
@@ -2388,6 +2410,21 @@ export class DemoDayApp {
     this.#weekDrafts.set(scope, structuredClone(accepted.configuration));
     this.#weekDraftBaseEvents.set(scope, accepted.event.id);
     this.#notice = { kind: "success", text: "Week published. Intake remains closed." };
+  }
+
+  async #connectNip07(): Promise<void> {
+    const signer = await connectNip07();
+    this.#nip07Pubkey = signer.publicKey;
+    this.#clearCabinIdentityState();
+    this.#notice = { kind: "success", text: "Logged in with NIP-07." };
+  }
+
+  #disconnectNip07(): void {
+    forgetNip07();
+    this.#nip07Pubkey = null;
+    this.#clearCabinIdentityState();
+    this.#notice = { kind: "info", text: "Logged out." };
+    this.requestRender();
   }
 
   readonly #onClick = (event: MouseEvent): void => {
@@ -2419,7 +2456,11 @@ export class DemoDayApp {
 
     if (this.#handleWeekAction(action, actionElement)) return;
 
-    if (action === "toggle-theme") {
+    if (action === "connect-nip07") {
+      void this.#withBusy("Logging in", () => this.#connectNip07());
+    } else if (action === "disconnect-nip07") {
+      this.#disconnectNip07();
+    } else if (action === "toggle-theme") {
       this.#theme = this.#theme === "dark" ? "light" : "dark";
       try {
         globalThis.localStorage.setItem(THEME_STORAGE_KEY, this.#theme);

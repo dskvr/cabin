@@ -21,7 +21,8 @@ import type { PrivateProposal, PrivateSchedule, PublicSchedule, WeekArchive } fr
 import { compareReplaceable, dedupe } from "../domain/utils.js";
 import { verifyEvent } from "./crypto.js";
 import { EventIndex } from "./event-index.js";
-import { parseParticipantEntryEvent, parsePrivateProposalGift, parsePrivateScheduleGift, parsePublicScheduleEvent, parseSessionEvent, parseWeekArchiveEvent, parseWeekConfigurationEvent } from "./event-parsers.js";
+import { parseParticipantEntryEvent, parsePrivateProposalGiftWithSigner, parsePrivateScheduleGiftWithSigner, parsePublicScheduleEvent, parseSessionEvent, parseWeekArchiveEvent, parseWeekConfigurationEvent } from "./event-parsers.js";
+import { localSigner, type EventSigner } from "./signer.js";
 import type { NostrTransport } from "./transport.js";
 
 interface PendingPublish {
@@ -295,7 +296,16 @@ export class NostrRepository {
     configurationEventId: string;
     recipientSecretKeyHex: string;
   }): Promise<Array<{ event: NostrEvent; inner: NostrEvent; proposal: PrivateProposal }>> {
-    const recipient = (await import("./crypto.js")).getPublicKey(recipientSecretKeyHex);
+    return this.privateProposalsWithSigner({ slot, configuration, configurationEventId, signer: localSigner(recipientSecretKeyHex) });
+  }
+
+  async privateProposalsWithSigner({ slot, configuration: _configuration, configurationEventId, signer }: {
+    slot: ProvisionedWeek;
+    configuration: ParsedWeekConfiguration["configuration"];
+    configurationEventId: string;
+    signer: EventSigner;
+  }): Promise<Array<{ event: NostrEvent; inner: NostrEvent; proposal: PrivateProposal }>> {
+    const recipient = signer.publicKey;
     await Promise.all([
       this.queryRaw(DEFAULT_RELAYS, { kinds: [GIFT_WRAP_KIND], "#p": [recipient], limit: 1_000 }),
       this.queryRaw(DEFAULT_RELAYS, { kinds: [APP_KIND], authors: [slot.captain_pubkey], "#d": [weekD(slot)], limit: 100 }),
@@ -304,7 +314,7 @@ export class NostrRepository {
     if (!revisions.some((item) => item.event.id === configurationEventId)) return [];
     const gifts = this.#index.allEvents().filter((event) => event.kind === GIFT_WRAP_KIND);
     const parsed = (await Promise.all(gifts.flatMap((event) => revisions.map(async (revision) => {
-      const item = await parsePrivateProposalGift({ event, recipientSecretKeyHex, slot, configuration: revision.configuration, configurationEventId: revision.event.id });
+      const item = await parsePrivateProposalGiftWithSigner({ event, signer, slot, configuration: revision.configuration, configurationEventId: revision.event.id });
       if (!item) return null;
       const effective = revisions.filter((candidate) => candidate.event.created_at <= item.inner.created_at).reduce<ParsedWeekConfiguration | null>((latest, candidate) => !latest || compareReplaceable(candidate.event, latest.event) ? candidate : latest, null);
       return effective?.event.id === revision.event.id ? item : null;
@@ -320,8 +330,12 @@ export class NostrRepository {
   }
 
   async privateSchedule(slot: ProvisionedWeek, recipientSecretKeyHex: string): Promise<{ event: NostrEvent; inner: NostrEvent; schedule: PrivateSchedule } | null> {
+    return this.privateScheduleWithSigner(slot, localSigner(recipientSecretKeyHex));
+  }
+
+  async privateScheduleWithSigner(slot: ProvisionedWeek, signer: EventSigner): Promise<{ event: NostrEvent; inner: NostrEvent; schedule: PrivateSchedule } | null> {
     await this.queryRaw(DEFAULT_RELAYS, { kinds: [GIFT_WRAP_KIND], "#p": [slot.captain_pubkey], limit: 1_000 });
-    const parsed = await Promise.all(this.#index.allEvents().map((event) => parsePrivateScheduleGift(event, recipientSecretKeyHex, slot)));
+    const parsed = await Promise.all(this.#index.allEvents().map((event) => parsePrivateScheduleGiftWithSigner(event, signer, slot)));
     return parsed.filter((item): item is NonNullable<typeof item> => item !== null).reduce<NonNullable<(typeof parsed)[number]> | null>((latest, item) =>
       !latest || item.inner.created_at > latest.inner.created_at || item.inner.created_at === latest.inner.created_at && item.inner.id > latest.inner.id ? item : latest,
     null);

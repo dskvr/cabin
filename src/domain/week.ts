@@ -75,13 +75,19 @@ function proposalField(value: unknown): value is ProposalFieldV1 {
   return isRecord(value) && identifier(value.id) && text(value.label, 1, 160) && typeof value.required === "boolean";
 }
 
+function dateAfter(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
 export function seedWeekConfiguration(slot: ProvisionedWeek, edits: Pick<WeekConfigurationV1, "theme" | "public_description"> = { theme: "", public_description: "" }): WeekConfigurationV1 {
   return {
     v: 1, type: "week-configuration", cohort_id: slot.cohort_id, week_number: slot.week_number, timezone: "Atlantic/Madeira", status: "setup", intake_open: false,
     theme: edits.theme, public_description: edits.public_description,
     activities: [
-      { id: `week-${slot.week_number}-tuesday-talk`, day: "tuesday", name: "Tuesday talks", date: slot.start_date, starts_at: "18:00", ends_at: "20:00", location: "To be confirmed", link: null },
-      { id: `week-${slot.week_number}-wednesday-workshop`, day: "wednesday", name: "Wednesday workshop", date: slot.end_date, starts_at: "18:00", ends_at: "20:00", location: "To be confirmed", link: null },
+      { id: `week-${slot.week_number}-tuesday-talk`, day: "tuesday", name: "Tuesday talks", date: dateAfter(slot.start_date, 1), starts_at: "18:00", ends_at: "20:00", location: "To be confirmed", link: null },
+      { id: `week-${slot.week_number}-wednesday-workshop`, day: "wednesday", name: "Wednesday workshop", date: dateAfter(slot.start_date, 2), starts_at: "18:00", ends_at: "20:00", location: "To be confirmed", link: null },
     ],
     proposal_fields: [
       { id: `week-${slot.week_number}-proposal-title`, label: "Proposal title", required: true },

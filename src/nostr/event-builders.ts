@@ -1,6 +1,6 @@
 import { APP_KIND, DEFAULT_RELAYS, GIFT_WRAP_KIND, PRIVATE_PROPOSAL_KIND, PRIVATE_SCHEDULE_KIND, PROFILE_KIND, WEEK_ARCHIVE_KIND, ZAP_REQUEST_KIND } from "../config/relays.js";
 import type { PrivateProposal, PrivateSchedule, PublicSchedule, WeekArchive } from "../domain/cabin.js";
-import { parsePrivateProposal, parsePrivateSchedule, parsePublicSchedule, parseWeekArchive } from "../domain/cabin.js";
+import { parsePrivateProposal, parsePrivateSchedule, parsePublicSchedule, parseWeekArchive, validateProposalForWeek } from "../domain/cabin.js";
 import type {
   DemoDaySessionV1,
   NostrEvent,
@@ -14,7 +14,8 @@ import type { WeekConfigurationV1 } from "../domain/week.js";
 import { parseWeekConfiguration } from "../domain/week.js";
 import { cloneTags, entryD } from "../domain/utils.js";
 import { encodeLnurl } from "./bech32.js";
-import { finalizeEvent, generateSecretKeyHex, getPublicKey, nip44Encrypt } from "./crypto.js";
+import { finalizeEvent, generateSecretKeyHex, nip44Encrypt } from "./crypto.js";
+import { localSigner, type EventSigner } from "./signer.js";
 
 async function giftWrap(inner: NostrEvent, recipientPubkey: string, createdAt: number): Promise<NostrEvent> {
   const ephemeralSecret = generateSecretKeyHex();
@@ -36,15 +37,27 @@ export async function buildPrivateProposalEvents({
   secretKeyHex: string;
   createdAt: number;
 }): Promise<{ captain: NostrEvent; inner: NostrEvent }> {
-  const author = getPublicKey(secretKeyHex);
+  return buildPrivateProposalEventsWithSigner({ proposal, slot, configuration, configurationEventId, signer: localSigner(secretKeyHex), createdAt });
+}
+
+export async function buildPrivateProposalEventsWithSigner({
+  proposal, slot, configuration, configurationEventId, signer, createdAt,
+}: {
+  proposal: PrivateProposal;
+  slot: ProvisionedWeek;
+  configuration: WeekConfigurationV1;
+  configurationEventId: string;
+  signer: EventSigner;
+  createdAt: number;
+}): Promise<{ captain: NostrEvent; inner: NostrEvent }> {
+  const author = signer.publicKey;
   if (!parsePrivateProposal(proposal) || proposal.author_pubkey !== author) throw new Error("Invalid private proposal");
-  const { validateProposalForWeek } = await import("../domain/cabin.js");
   const errors = validateProposalForWeek(proposal, author, slot, configuration, configurationEventId);
   if (errors.length) throw new Error(errors[0]);
-  const inner = await finalizeEvent({
+  const inner = await signer.signEvent({
     kind: PRIVATE_PROPOSAL_KIND, created_at: createdAt,
     tags: [["t", "captains-cabin-private-proposal"]], content: JSON.stringify(proposal),
-  }, secretKeyHex);
+  });
   return {
     captain: await giftWrap(inner, slot.captain_pubkey, createdAt),
     inner,
@@ -54,24 +67,42 @@ export async function buildPrivateProposalEvents({
 export async function buildPrivateScheduleEvent({
   schedule, slot, secretKeyHex, createdAt,
 }: { schedule: PrivateSchedule; slot: ProvisionedWeek; secretKeyHex: string; createdAt: number }): Promise<{ wrap: NostrEvent; inner: NostrEvent }> {
-  const captain = getPublicKey(secretKeyHex);
+  return buildPrivateScheduleEventWithSigner({ schedule, slot, signer: localSigner(secretKeyHex), createdAt });
+}
+
+export async function buildPrivateScheduleEventWithSigner({
+  schedule, slot, signer, createdAt,
+}: { schedule: PrivateSchedule; slot: ProvisionedWeek; signer: EventSigner; createdAt: number }): Promise<{ wrap: NostrEvent; inner: NostrEvent }> {
+  const captain = signer.publicKey;
   if (captain !== slot.captain_pubkey || !parsePrivateSchedule(schedule) || schedule.cohort_id !== slot.cohort_id || schedule.week_number !== slot.week_number) throw new Error("Only the assigned captain can save this schedule");
-  const inner = await finalizeEvent({ kind: PRIVATE_SCHEDULE_KIND, created_at: createdAt, tags: [["t", "captains-cabin-private-schedule"]], content: JSON.stringify(schedule) }, secretKeyHex);
+  const inner = await signer.signEvent({ kind: PRIVATE_SCHEDULE_KIND, created_at: createdAt, tags: [["t", "captains-cabin-private-schedule"]], content: JSON.stringify(schedule) });
   return { wrap: await giftWrap(inner, captain, createdAt), inner };
 }
 
 export async function buildPublicScheduleEvent({
   schedule, slot, secretKeyHex, createdAt,
 }: { schedule: PublicSchedule; slot: ProvisionedWeek; secretKeyHex: string; createdAt: number }): Promise<NostrEvent> {
-  if (getPublicKey(secretKeyHex) !== slot.captain_pubkey || !parsePublicSchedule(schedule) || schedule.cohort_id !== slot.cohort_id || schedule.week_number !== slot.week_number) throw new Error("Only the assigned captain can publish a valid schedule");
-  return finalizeEvent({ kind: APP_KIND, created_at: createdAt, tags: [["d", `captains-cabin:schedule:${slot.cohort_id}:${slot.week_number}`], ["t", "captains-cabin-public-schedule"]], content: JSON.stringify(schedule) }, secretKeyHex);
+  return buildPublicScheduleEventWithSigner({ schedule, slot, signer: localSigner(secretKeyHex), createdAt });
+}
+
+export async function buildPublicScheduleEventWithSigner({
+  schedule, slot, signer, createdAt,
+}: { schedule: PublicSchedule; slot: ProvisionedWeek; signer: EventSigner; createdAt: number }): Promise<NostrEvent> {
+  if (signer.publicKey !== slot.captain_pubkey || !parsePublicSchedule(schedule) || schedule.cohort_id !== slot.cohort_id || schedule.week_number !== slot.week_number) throw new Error("Only the assigned captain can publish a valid schedule");
+  return signer.signEvent({ kind: APP_KIND, created_at: createdAt, tags: [["d", `captains-cabin:schedule:${slot.cohort_id}:${slot.week_number}`], ["t", "captains-cabin-public-schedule"]], content: JSON.stringify(schedule) });
 }
 
 export async function buildWeekArchiveEvent({
   archive, slot, secretKeyHex, createdAt,
 }: { archive: WeekArchive; slot: ProvisionedWeek; secretKeyHex: string; createdAt: number }): Promise<NostrEvent> {
-  if (getPublicKey(secretKeyHex) !== slot.captain_pubkey || !parseWeekArchive(archive) || archive.cohort_id !== slot.cohort_id || archive.week_number !== slot.week_number) throw new Error("Only the assigned captain can archive a valid week");
-  return finalizeEvent({ kind: WEEK_ARCHIVE_KIND, created_at: createdAt, tags: [["d", `captains-cabin:archive:${slot.cohort_id}:${slot.week_number}`], ["t", "captains-cabin-week-archive"]], content: JSON.stringify(archive) }, secretKeyHex);
+  return buildWeekArchiveEventWithSigner({ archive, slot, signer: localSigner(secretKeyHex), createdAt });
+}
+
+export async function buildWeekArchiveEventWithSigner({
+  archive, slot, signer, createdAt,
+}: { archive: WeekArchive; slot: ProvisionedWeek; signer: EventSigner; createdAt: number }): Promise<NostrEvent> {
+  if (signer.publicKey !== slot.captain_pubkey || !parseWeekArchive(archive) || archive.cohort_id !== slot.cohort_id || archive.week_number !== slot.week_number) throw new Error("Only the assigned captain can archive a valid week");
+  return signer.signEvent({ kind: WEEK_ARCHIVE_KIND, created_at: createdAt, tags: [["d", `captains-cabin:archive:${slot.cohort_id}:${slot.week_number}`], ["t", "captains-cabin-week-archive"]], content: JSON.stringify(archive) });
 }
 
 export async function buildSessionEvent({
@@ -110,16 +141,29 @@ export async function buildWeekConfigurationEvent({
   secretKeyHex: string;
   createdAt: number;
 }): Promise<NostrEvent> {
-  const signer = getPublicKey(secretKeyHex);
-  if (!isAssignedCaptain(slot, signer)) throw new Error("Only the assigned captain can configure this week");
+  return buildWeekConfigurationEventWithSigner({ slot, configuration, signer: localSigner(secretKeyHex), createdAt });
+}
+
+export async function buildWeekConfigurationEventWithSigner({
+  slot,
+  configuration,
+  signer,
+  createdAt,
+}: {
+  slot: ProvisionedWeek;
+  configuration: WeekConfigurationV1;
+  signer: EventSigner;
+  createdAt: number;
+}): Promise<NostrEvent> {
+  if (!isAssignedCaptain(slot, signer.publicKey)) throw new Error("Only the assigned captain can configure this week");
   if (configuration.cohort_id !== slot.cohort_id || configuration.week_number !== slot.week_number) throw new Error("Week configuration does not match its manifest slot");
   if (!parseWeekConfiguration(configuration)) throw new Error("Week configuration is incomplete or invalid");
-  return finalizeEvent({
+  return signer.signEvent({
     kind: APP_KIND,
     created_at: createdAt,
     tags: [["d", weekD(slot)], ["t", "captains-cabin-week"]],
     content: JSON.stringify(configuration),
-  }, secretKeyHex);
+  });
 }
 
 export async function buildEntryEvent({

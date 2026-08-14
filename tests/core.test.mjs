@@ -204,6 +204,7 @@ test("configuration cloning creates fresh structural IDs and copies no operation
   assert.equal(clone.base_event_id, null);
   assert.equal(clone.week_number, 4);
   assert.deepEqual(clone.activities.map((item) => item.name), source.activities.map((item) => item.name));
+  assert.deepEqual(clone.activities.map((item) => item.date), ["2026-09-03", "2026-09-04"], "cloned Tuesday and Wednesday activities use the target week's dates");
   assert.equal(clone.activities.some((item) => source.activities.some((old) => old.id === item.id)), false);
   assert.equal(clone.proposal_fields.some((item) => source.proposal_fields.some((old) => old.id === item.id)), false);
   const archived = configurationForArchive(source);
