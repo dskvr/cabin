@@ -5,15 +5,15 @@ milestone_name: milestone
 current_phase: 01
 current_phase_name: Secure Week Configuration
 status: executing
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-08-14T11:39:03.789Z"
+stopped_at: Completed 01-03-PLAN.md
+last_updated: "2026-08-14T11:45:33.278Z"
 last_activity: 2026-08-14
 last_activity_desc: Phase 01 execution started
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
+  completed_plans: 3
 ---
 
 # Project State
@@ -28,11 +28,11 @@ See: .planning/PROJECT.md (updated 2026-08-14)
 ## Current Position
 
 Phase: 01 (Secure Week Configuration) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-08-14 — Phase 01 execution started
 
-Progress: [█████░░░░░] 50%
+Progress: [████████░░] 75%
 
 ## Performance Metrics
 
@@ -60,6 +60,7 @@ Progress: [█████░░░░░] 50%
 |------|----------|-------|-------|
 | Phase 01 P01 | 6m | 2 tasks | 9 files |
 | Phase 01 P02 | 6m | 2 tasks | 7 files |
+| Phase 01 P03 | 4m | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -76,6 +77,9 @@ Decisions are logged in PROJECT.md Key Decisions table. Recent decisions affecti
 - [Phase ?]: Compare a retained local base event ID to a freshly refreshed coordinate before publishing a revision.
 - [Phase ?]: Keep activities and proposal fields ID-based; labels, order, and requiredness never replace identity.
 - [Phase ?]: Use validated whole-minute per-week timing with legacy timer defaults.
+- [Phase ?]: Use a separately constructed allowlist projection for public week previews.
+- [Phase ?]: Keep assigned-week route authority derived from active identity and manifest data, never the hash.
+- [Phase ?]: Retain local week drafts through load and publication failures with retryable UI states.
 
 ### Pending Todos
 
@@ -95,6 +99,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-08-14T11:39:03.783Z
-Stopped at: Completed 01-02-PLAN.md
+Last session: 2026-08-14T11:45:33.272Z
+Stopped at: Completed 01-03-PLAN.md
 Resume file: None
