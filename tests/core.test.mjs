@@ -58,6 +58,7 @@ import {
   removeActivity,
   removeProposalField,
   publicWeekProjection,
+  parseWeekConfiguration,
   seedWeekConfiguration,
   updateActivity,
   updateProposalField,
@@ -183,11 +184,13 @@ test("private schedule warnings and public projection preserve an exact privacy 
   assert.match(warnings, /more than once/);
   assert.match(warnings, /overlaps/);
   assert.match(warnings, /not accepted/);
+  configuration.activities.push({ id: "monday-hike", day: "monday", name: "Morning hike", date: "", starts_at: "", ends_at: "", location: "", link: null });
   const projection = publicScheduleProjection(schedule, configuration, "02".repeat(32), "publication-one", 20);
   const serialized = JSON.stringify(projection);
   assert.match(serialized, /Selected title/);
   assert.doesNotMatch(serialized, /Rejected|private answer|proposal-one|proposal-two|decisions|answers/);
   assert.equal(projection.activities.flatMap((item) => item.sessions).length, 2);
+  assert.equal(projection.activities.find((item) => item.day === "monday")?.name, "Morning hike");
   assert.deepEqual(parsePublicSchedule(projection), projection);
   assert.equal(parsePublicSchedule({ ...projection, answers: { secret: "leak" } }), null, "public payloads reject extra top-level keys");
   assert.equal(parsePublicSchedule({ ...projection, activities: [{ ...projection.activities[0], sessions: [{ ...projection.activities[0].sessions[0], proposal_id: "private" }] }] }), null, "public sessions reject private coordinates");
@@ -720,7 +723,10 @@ test("week activities retain stable identities, order, valid timing, and duratio
   const slot = { cohort_id: "madeira-2026", week_number: 3, start_date: "2026-01-13", end_date: "2026-01-19", captain_pubkey: key(90) };
   const seeded = seedWeekConfiguration(slot, { theme: "Nostr in Madeira", public_description: "A complete week." });
   const tuesday = seeded.activities.find((item) => item.day === "tuesday");
+  const wednesday = seeded.activities.find((item) => item.day === "wednesday");
   assert.ok(tuesday);
+  assert.equal(tuesday.name, "Tuesday talks");
+  assert.equal(wednesday?.name, "Wednesday workshop");
   const added = addActivity(seeded, "tuesday");
   const addedActivity = added.activities.at(1);
   assert.ok(addedActivity);
@@ -737,6 +743,24 @@ test("week activities retain stable identities, order, valid timing, and duratio
   assert.equal(validateWeekConfiguration({ ...removed, presentation_minutes: 1.5 }).valid, false);
   assert.deepEqual(calculateTimer(60_000, { presentationMs: 60_000, questionMs: 120_000 }), { phase: "questions", remainingMs: 120_000 });
   assert.deepEqual(splitPresentationTime(181_000, { presentationMs: 60_000, questionMs: 120_000 }), { presentation_ms: 60_000, questions_ms: 120_000, overtime_ms: 1_000, total_ms: 181_000 });
+});
+
+test("captains can add title-only activities to every weekday", () => {
+  const slot = { cohort_id: "madeira-2026", week_number: 3, start_date: "2026-01-12", end_date: "2026-01-16", captain_pubkey: key(90), participant_allowlist: [] };
+  let configuration = seedWeekConfiguration(slot, { theme: "Flexible week", public_description: "Activities vary by captain." });
+  for (const day of ["monday", "tuesday", "wednesday", "thursday", "friday"]) {
+    const previousIds = new Set(configuration.activities.map((item) => item.id));
+    configuration = addActivity(configuration, day);
+    const added = configuration.activities.find((item) => !previousIds.has(item.id));
+    assert.ok(added);
+    configuration = updateActivity(configuration, added.id, { name: `${day} activity` });
+    assert.deepEqual({ date: added.date, starts_at: added.starts_at, ends_at: added.ends_at, location: added.location, link: added.link }, { date: "", starts_at: "", ends_at: "", location: "", link: null });
+  }
+  assert.equal(validateWeekConfiguration(configuration).valid, true);
+  assert.ok(parseWeekConfiguration(configuration), "title-only activities are valid signed configuration data");
+  const monday = configuration.activities.find((item) => item.name === "monday activity");
+  assert.ok(monday);
+  assert.equal(validateWeekConfiguration(updateActivity(configuration, monday.id, { name: "" })).valid, false, "title remains the only required activity field");
 });
 
 test("proposal fields keep answer association through rename, reorder, requiredness, and removal", () => {

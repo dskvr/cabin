@@ -1,5 +1,5 @@
 import type { ProvisionedWeek } from "./cohort.js";
-import { parseWeekConfiguration, seedWeekConfiguration, type ProposalFieldV1, type WeekActivityV1, type WeekConfigurationV1 } from "./week.js";
+import { parseWeekConfiguration, type ProposalFieldV1, type WeekActivityV1, type WeekConfigurationV1 } from "./week.js";
 import { isRecord, isValidEventId, isValidHexPubkey } from "./utils.js";
 
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -168,7 +168,7 @@ export function scheduleWarnings(schedule: PrivateSchedule, configuration: WeekC
     const activity = activities.get(placement.activity_id);
     if (!accepted.has(placement.proposal_id)) warnings.push(`${placement.id} uses a proposal that is not accepted.`);
     if (!activity) warnings.push(`${placement.id} uses an unknown activity.`);
-    else if (placement.starts_at < activity.starts_at || placement.ends_at > activity.ends_at) warnings.push(`${placement.id} falls outside ${activity.name}.`);
+    else if (activity.starts_at && activity.ends_at && (placement.starts_at < activity.starts_at || placement.ends_at > activity.ends_at)) warnings.push(`${placement.id} falls outside ${activity.name}.`);
   }
   for (const [proposalId, count] of counts) if (count > 1) warnings.push(`${proposalId} is placed more than once.`);
   for (const activity of configuration.activities) {
@@ -206,7 +206,7 @@ export function parsePublicSchedule(value: unknown): PublicSchedule | null {
   if (!isRecord(value) || Object.keys(value).some((key) => !topKeys.includes(key)) || value.v !== 1 || value.type !== "captains-cabin-public-schedule" || typeof value.publication_id !== "string" || !ID.test(value.publication_id) || typeof value.cohort_id !== "string" || !ID.test(value.cohort_id) || typeof value.week_number !== "number" || !Number.isInteger(value.week_number) || value.week_number < 1 || value.timezone !== "Atlantic/Madeira" || !isValidEventId(value.source_configuration_event_id) || !isValidEventId(value.source_draft_event_id) || !safeMs(value.published_at_ms) || !Array.isArray(value.activities) || value.activities.length > 64) return null;
   const activityKeys = ["id", "day", "name", "date", "starts_at", "ends_at", "location", "link", "sessions"];
   const sessionKeys = ["id", "starts_at", "ends_at", "title", "presenter", "description"];
-  if (!value.activities.every((activity) => isRecord(activity) && !Object.keys(activity).some((key) => !activityKeys.includes(key)) && typeof activity.id === "string" && ID.test(activity.id) && (activity.day === "tuesday" || activity.day === "wednesday") && boundedText(activity.name, 160) && typeof activity.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(activity.date) && time(activity.starts_at) && time(activity.ends_at) && activity.starts_at < activity.ends_at && boundedText(activity.location, 240) && (activity.link === null || typeof activity.link === "string" && /^https?:\/\//.test(activity.link)) && Array.isArray(activity.sessions) && activity.sessions.length <= MAX_PLACEMENTS && activity.sessions.every((session) => isRecord(session) && !Object.keys(session).some((key) => !sessionKeys.includes(key)) && typeof session.id === "string" && ID.test(session.id) && time(session.starts_at) && time(session.ends_at) && session.starts_at < session.ends_at && boundedText(session.title, 200) && boundedText(session.presenter, 160) && boundedText(session.description, 1_000, true)))) return null;
+  if (!value.activities.every((activity) => isRecord(activity) && !Object.keys(activity).some((key) => !activityKeys.includes(key)) && typeof activity.id === "string" && ID.test(activity.id) && ["monday", "tuesday", "wednesday", "thursday", "friday"].includes(String(activity.day)) && boundedText(activity.name, 160) && typeof activity.date === "string" && (activity.date === "" || /^\d{4}-\d{2}-\d{2}$/.test(activity.date)) && typeof activity.starts_at === "string" && (activity.starts_at === "" || time(activity.starts_at)) && typeof activity.ends_at === "string" && (activity.ends_at === "" || time(activity.ends_at)) && (!(activity.starts_at && activity.ends_at) || activity.starts_at < activity.ends_at) && boundedText(activity.location, 240, true) && (activity.link === null || typeof activity.link === "string" && /^https?:\/\//.test(activity.link)) && Array.isArray(activity.sessions) && activity.sessions.length <= MAX_PLACEMENTS && activity.sessions.every((session) => isRecord(session) && !Object.keys(session).some((key) => !sessionKeys.includes(key)) && typeof session.id === "string" && ID.test(session.id) && time(session.starts_at) && time(session.ends_at) && session.starts_at < session.ends_at && boundedText(session.title, 200) && boundedText(session.presenter, 160) && boundedText(session.description, 1_000, true)))) return null;
   const schedule = value as unknown as PublicSchedule;
   const activityIds = schedule.activities.map((item) => item.id);
   const sessionIds = schedule.activities.flatMap((item) => item.sessions.map((session) => session.id));
@@ -229,12 +229,13 @@ export function cloneWeekConfiguration(
   freshId: () => string,
 ): WeekConfigurationV1 {
   const makeId = (prefix: string): string => `${prefix}-${freshId()}`.slice(0, 64).replace(/[^a-z0-9-]/g, "-");
-  const targetDates = new Map(seedWeekConfiguration(target).activities.map((activity) => [activity.day, activity.date]));
+  const dayOffsets = new Map<WeekActivityV1["day"], number>([["monday", 0], ["tuesday", 1], ["wednesday", 2], ["thursday", 3], ["friday", 4]]);
+  const targetDate = (day: WeekActivityV1["day"]): string => new Date(Date.parse(`${target.start_date}T00:00:00Z`) + (dayOffsets.get(day) ?? 0) * 86_400_000).toISOString().slice(0, 10);
   return {
     v: 1, type: "week-configuration", cohort_id: target.cohort_id, week_number: target.week_number,
     timezone: "Atlantic/Madeira", status: "setup", intake_open: false,
     theme: source.theme, public_description: source.public_description,
-    activities: source.activities.map((activity) => ({ ...activity, id: makeId(`w${target.week_number}-activity`), date: targetDates.get(activity.day) ?? activity.date })),
+    activities: source.activities.map((activity) => ({ ...activity, id: makeId(`w${target.week_number}-activity`), date: activity.date ? targetDate(activity.day) : "" })),
     proposal_fields: source.proposal_fields.map((field) => ({ ...field, id: makeId(`w${target.week_number}-field`) })),
     presentation_minutes: source.presentation_minutes, question_minutes: source.question_minutes, base_event_id: null,
   };

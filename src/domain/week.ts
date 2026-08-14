@@ -5,6 +5,8 @@ const MAX_ACTIVITIES = 64;
 const MAX_PROPOSAL_FIELDS = 32;
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const MAX_WEEK_CONFIGURATION_CONTENT_LENGTH = 32_768;
+export const ACTIVITY_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"] as const;
+export type ActivityDay = typeof ACTIVITY_DAYS[number];
 const CONFIGURATION_KEYS = new Set([
   "v", "type", "cohort_id", "week_number", "timezone", "status", "intake_open", "theme",
   "public_description", "activities", "proposal_fields", "presentation_minutes", "question_minutes", "base_event_id",
@@ -12,7 +14,7 @@ const CONFIGURATION_KEYS = new Set([
 
 export interface WeekActivityV1 {
   id: string;
-  day: "tuesday" | "wednesday";
+  day: ActivityDay;
   name: string;
   date: string;
   starts_at: string;
@@ -68,7 +70,16 @@ function identifier(value: unknown): value is string {
 }
 
 function activity(value: unknown): value is WeekActivityV1 {
-  return isRecord(value) && identifier(value.id) && (value.day === "tuesday" || value.day === "wednesday") && text(value.name, 1, 160) && calendarDate(value.date) && time(value.starts_at) && time(value.ends_at) && value.starts_at < value.ends_at && text(value.location, 1, 240) && (value.link === null || typeof value.link === "string" && normalizeOptionalUrl(value.link) === value.link);
+  return isRecord(value)
+    && identifier(value.id)
+    && ACTIVITY_DAYS.includes(value.day as ActivityDay)
+    && text(value.name, 1, 160)
+    && (value.date === "" || calendarDate(value.date))
+    && (value.starts_at === "" || time(value.starts_at))
+    && (value.ends_at === "" || time(value.ends_at))
+    && (!(value.starts_at && value.ends_at) || value.starts_at < value.ends_at)
+    && typeof value.location === "string" && value.location.length <= 240
+    && (value.link === null || typeof value.link === "string" && normalizeOptionalUrl(value.link) === value.link);
 }
 
 function proposalField(value: unknown): value is ProposalFieldV1 {
@@ -100,7 +111,7 @@ export function seedWeekConfiguration(slot: ProvisionedWeek, edits: Pick<WeekCon
 export function parseWeekConfiguration(value: unknown): WeekConfigurationV1 | null {
   if (!isRecord(value) || Object.keys(value).some((key) => !CONFIGURATION_KEYS.has(key)) || value.v !== 1 || value.type !== "week-configuration" || !identifier(value.cohort_id) || typeof value.week_number !== "number" || !Number.isInteger(value.week_number) || value.week_number < 1) return null;
   if (value.timezone !== "Atlantic/Madeira" || !["setup", "active", "completed"].includes(String(value.status)) || typeof value.intake_open !== "boolean" || value.status === "completed" && value.intake_open || !text(value.theme, 1, 120) || !text(value.public_description, 1, 4000)) return null;
-  if (!Array.isArray(value.activities) || value.activities.length === 0 || value.activities.length > MAX_ACTIVITIES || !value.activities.every(activity)) return null;
+  if (!Array.isArray(value.activities) || value.activities.length > MAX_ACTIVITIES || !value.activities.every(activity)) return null;
   if (!Array.isArray(value.proposal_fields) || value.proposal_fields.length === 0 || value.proposal_fields.length > MAX_PROPOSAL_FIELDS || !value.proposal_fields.every(proposalField)) return null;
   if (new Set(value.activities.map((item) => item.id)).size !== value.activities.length || new Set(value.proposal_fields.map((item) => item.id)).size !== value.proposal_fields.length) return null;
   if (!validDuration(value.presentation_minutes) || !validDuration(value.question_minutes)) return null;
@@ -125,12 +136,10 @@ export function publicWeekProjection(configuration: WeekConfigurationV1): Public
 
 export type WeekValidation = {
   valid: boolean;
-  sections: Record<"week_details" | "tuesday_activities" | "wednesday_activities" | "proposal_form" | "demo_day_timing", string[]>;
+  sections: Record<"week_details" | "activities" | "proposal_form" | "demo_day_timing", string[]>;
 };
 
 const validDuration = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 180;
-const activityGroup = (configuration: WeekConfigurationV1, day: WeekActivityV1["day"]) => configuration.activities.filter((item) => item.day === day);
-
 function nextId(existing: Iterable<string>, prefix: string): string {
   const ids = new Set(existing);
   let index = 1;
@@ -140,11 +149,8 @@ function nextId(existing: Iterable<string>, prefix: string): string {
 
 export function addActivity(configuration: WeekConfigurationV1, day: WeekActivityV1["day"]): WeekConfigurationV1 {
   if (configuration.activities.length >= MAX_ACTIVITIES) return configuration;
-  const existing = activityGroup(configuration, day);
-  const template = existing[existing.length - 1] ?? configuration.activities.find((item) => item.day === day);
   const id = nextId(configuration.activities.map((item) => item.id), `week-${configuration.week_number}-${day}-activity`);
-  const fallbackDate = day === "tuesday" ? configuration.activities.find((item) => item.day === "tuesday")?.date ?? "" : configuration.activities.find((item) => item.day === "wednesday")?.date ?? "";
-  const added: WeekActivityV1 = { id, day, name: "New activity", date: template?.date ?? fallbackDate, starts_at: template?.starts_at ?? "18:00", ends_at: template?.ends_at ?? "19:00", location: template?.location ?? "To be confirmed", link: null };
+  const added: WeekActivityV1 = { id, day, name: "New activity", date: "", starts_at: "", ends_at: "", location: "", link: null };
   const lastIndex = configuration.activities.reduce((index, item, current) => item.day === day ? current : index, -1);
   return { ...configuration, activities: [...configuration.activities.slice(0, lastIndex + 1), added, ...configuration.activities.slice(lastIndex + 1)] };
 }
@@ -207,17 +213,11 @@ export function validateProposalAnswers(schema: ProposalFieldV1[], answersByFiel
 }
 
 export function validateWeekConfiguration(configuration: WeekConfigurationV1): WeekValidation {
-  const sections: WeekValidation["sections"] = { week_details: [], tuesday_activities: [], wednesday_activities: [], proposal_form: [], demo_day_timing: [] };
+  const sections: WeekValidation["sections"] = { week_details: [], activities: [], proposal_form: [], demo_day_timing: [] };
   if (!text(configuration.theme, 1, 120)) sections.week_details.push("Enter a theme.");
   if (!text(configuration.public_description, 1, 4000)) sections.week_details.push("Enter a public description.");
-  for (const day of ["tuesday", "wednesday"] as const) {
-    const errors = sections[`${day}_activities`];
-    const items = activityGroup(configuration, day);
-    if (!items.length) errors.push(`Add a ${day} activity.`);
-    for (const item of items) {
-      if (!activity(item as unknown)) errors.push(`Complete ${item.name || "this activity"}.`);
-    }
-  }
+  if (configuration.activities.length > MAX_ACTIVITIES || new Set(configuration.activities.map((item) => item.id)).size !== configuration.activities.length) sections.activities.push("Remove duplicate or excess activities.");
+  for (const item of configuration.activities) if (!activity(item as unknown)) sections.activities.push(`Enter a title and correct any invalid optional fields for ${item.name || "this activity"}.`);
   if (!configuration.proposal_fields.length) sections.proposal_form.push("Add a field before publishing this week.");
   if (configuration.proposal_fields.length > MAX_PROPOSAL_FIELDS || new Set(configuration.proposal_fields.map((item) => item.id)).size !== configuration.proposal_fields.length || !configuration.proposal_fields.every(proposalField)) sections.proposal_form.push("Complete the proposal fields.");
   if (!validDuration(configuration.presentation_minutes) || !validDuration(configuration.question_minutes)) sections.demo_day_timing.push("Use whole minutes from 1 to 180.");

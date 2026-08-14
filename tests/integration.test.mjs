@@ -570,6 +570,11 @@ test("week workspace ships every loading, error, retry, accessibility, and respo
   assert.match(css, /min-height: 44px/);
   assert.match(app, /!persisted && !captainSlot/, "a participant waits for the captain's first publication");
   assert.match(app, /persisted \? "Publish changes" : "Create week"/, "an assigned captain can create the first week event");
+  for (const day of ["monday", "tuesday", "wednesday", "thursday", "friday"]) assert.match(app, new RegExp(`group\\("${day}"`));
+  assert.match(app, /data-day="\$\{day\}"/);
+  assert.match(app, /Date — optional/);
+  assert.match(app, /Location — optional/);
+  assert.match(app, /seedWeekConfiguration\(slot\)\.activities/, "public navigation shows the safe Tuesday and Wednesday defaults before first publication");
 });
 
 test("week editor actions stay local and publication remains a deliberate guarded boundary", () => {

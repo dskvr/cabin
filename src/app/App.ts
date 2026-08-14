@@ -22,6 +22,7 @@ import {
 import {
   addActivity,
   addProposalField,
+  ACTIVITY_DAYS,
   moveActivity,
   moveProposalField,
   parseWeekConfiguration,
@@ -32,6 +33,8 @@ import {
   updateActivity,
   updateProposalField,
   validateWeekConfiguration,
+  type ActivityDay,
+  type WeekActivityV1,
   type WeekConfigurationV1,
 } from "../domain/week.js";
 import { calculateElo, rankElo } from "../domain/elo.js";
@@ -200,6 +203,17 @@ function weekDayDate(slot: ProvisionedWeek, day: WeekDay): string {
 function displayDate(date: string): string {
   return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Atlantic/Madeira" })
     .format(new Date(`${date}T12:00:00Z`));
+}
+
+function activityTime(activity: Pick<WeekActivityV1, "starts_at" | "ends_at">): string {
+  if (activity.starts_at && activity.ends_at) return `${activity.starts_at}–${activity.ends_at}`;
+  if (activity.starts_at) return `Starts ${activity.starts_at}`;
+  if (activity.ends_at) return `Ends ${activity.ends_at}`;
+  return "";
+}
+
+function activityDetails(activity: Pick<WeekActivityV1, "date" | "starts_at" | "ends_at" | "location">): string[] {
+  return [activity.date, activityTime(activity), activity.location].filter(Boolean);
 }
 
 function storedTheme(): ColorTheme {
@@ -540,6 +554,7 @@ export class DemoDayApp {
     const slot = this.#currentPublicWeek();
     if (!slot) return `<section class="empty-state"><h1>Cohort week unavailable</h1><p>Check the compiled cohort manifest.</p></section>`;
     const configuration = this.#publicConfiguration(slot);
+    const defaultActivities = configuration ? [] : seedWeekConfiguration(slot).activities;
     const publication = this.#repository.weekArchive(slot)?.archive.public_schedule ?? this.#repository.publicSchedule(slot)?.schedule;
     const sessions = this.#sessionsForWeek(slot);
     const fridayDate = weekDayDate(slot, "friday");
@@ -549,16 +564,17 @@ export class DemoDayApp {
       const date = weekDayDate(slot, day);
       const activities = publication?.activities.filter((activity) => activity.day === day)
         ?? configuration?.activities.filter((activity) => activity.day === day)
-        ?? [];
+        ?? defaultActivities.filter((activity) => activity.day === day);
       let detail: string;
+      const activityList = activities.length ? `<div class="day-card-events">${activities.slice(0, 2).map((activity) => `<div><strong>${escapeHtml(activity.name)}</strong>${activityTime(activity) ? `<span>${escapeHtml(activityTime(activity))}</span>` : ""}${activity.location ? `<small>${escapeHtml(activity.location)}</small>` : ""}</div>`).join("")}</div>` : "";
       if (day === "monday") {
-        detail = `<p>${escapeHtml(description)}</p>`;
+        detail = `<p>${escapeHtml(description)}</p>${activityList}`;
       } else if (day === "friday") {
         const timing = configuration ? `${configuration.presentation_minutes} min demos · ${configuration.question_minutes} min questions` : "Demo Day";
         const live = sessions.filter((session) => session.state.closed_at_ms === null).length;
-        detail = `<p>${escapeHtml(timing)}</p><div class="day-card-metric"><strong>${sessions.length}</strong><span>${live ? `${live} live` : "sessions"}</span></div>`;
+        detail = `<p>${escapeHtml(timing)}</p>${activityList}<div class="day-card-metric"><strong>${sessions.length}</strong><span>${live ? `${live} live` : "sessions"}</span></div>`;
       } else if (activities.length) {
-        detail = `<div class="day-card-events">${activities.slice(0, 2).map((activity) => `<div><strong>${escapeHtml(activity.name)}</strong><span>${escapeHtml(activity.starts_at)}–${escapeHtml(activity.ends_at)}</span><small>${escapeHtml(activity.location)}</small></div>`).join("")}</div>`;
+        detail = activityList;
       } else {
         detail = `<p>No public activity scheduled.</p>`;
       }
@@ -606,25 +622,28 @@ export class DemoDayApp {
     const slot = manifest ? deriveProvisionedWeeks(manifest).find((candidate) => candidate.week_number === weekNumber) ?? null : null;
     if (!slot) return `<section class="empty-state"><h1>Week not found</h1><a class="button button-primary" href="#/">Return to cohort week</a></section>`;
     const configuration = this.#publicConfiguration(slot);
+    const defaultActivities = configuration ? [] : seedWeekConfiguration(slot).activities;
     const publication = this.#repository.weekArchive(slot)?.archive.public_schedule ?? this.#repository.publicSchedule(slot)?.schedule;
     const date = weekDayDate(slot, day);
     const navigation = WEEK_DAYS.map((candidate) => `<a class="week-day-tab ${candidate === day ? "active" : ""} ${candidate === "friday" ? "friday" : ""}" href="#/week/${slot.week_number}/${candidate}" ${candidate === day ? 'aria-current="page"' : ""}>${WEEK_DAY_LABELS[candidate]}</a>`).join("");
+    const publishedActivities = publication?.activities.filter((activity) => activity.day === day) ?? [];
+    const activities = publishedActivities.length ? publishedActivities : configuration?.activities.filter((activity) => activity.day === day) ?? defaultActivities.filter((activity) => activity.day === day);
+    const activityCards = activities.map((activity) => {
+      const sessions = publication?.activities.find((candidate) => candidate.id === activity.id)?.sessions ?? [];
+      const details = activityDetails(activity);
+      return `<article class="panel day-detail-panel">${details.length ? `<span class="eyebrow">${escapeHtml(details.join(" · "))}</span>` : ""}<h2>${escapeHtml(activity.name)}</h2>${activity.link ? `<p><a href="${escapeAttr(activity.link)}" target="_blank" rel="noreferrer">Open event link ↗</a></p>` : ""}${sessions.length ? `<div class="day-session-list">${sessions.map((session) => `<section><span>${escapeHtml(session.starts_at)}–${escapeHtml(session.ends_at)}</span><h3>${escapeHtml(session.title)}</h3><p>${escapeHtml(session.presenter)}</p>${session.description ? `<p>${escapeHtml(session.description)}</p>` : ""}</section>`).join("")}</div>` : ""}</article>`;
+    }).join("");
     let content: string;
     if (day === "monday") {
-      content = `<section class="panel day-detail-panel"><span class="eyebrow">Week overview</span><h2>${escapeHtml(configuration?.theme ?? `Week ${slot.week_number}`)}</h2><p>${escapeHtml(configuration?.public_description ?? "The captain has not published the public week details yet.")}</p><dl class="metadata-list"><div><dt>Timezone</dt><dd>Atlantic/Madeira</dd></div><div><dt>Week</dt><dd>${slot.week_number}</dd></div></dl></section>`;
+      content = `<section class="panel day-detail-panel"><span class="eyebrow">Week overview</span><h2>${escapeHtml(configuration?.theme ?? `Week ${slot.week_number}`)}</h2><p>${escapeHtml(configuration?.public_description ?? "The captain has not published the public week details yet.")}</p><dl class="metadata-list"><div><dt>Timezone</dt><dd>Atlantic/Madeira</dd></div><div><dt>Week</dt><dd>${slot.week_number}</dd></div></dl></section>${activityCards}`;
     } else if (day === "tuesday" || day === "wednesday") {
-      const publishedActivities = publication?.activities.filter((activity) => activity.day === day) ?? [];
-      const activities = publishedActivities.length ? publishedActivities : configuration?.activities.filter((activity) => activity.day === day) ?? [];
-      content = activities.map((activity) => {
-        const sessions = publication?.activities.find((candidate) => candidate.id === activity.id)?.sessions ?? [];
-        return `<article class="panel day-detail-panel"><span class="eyebrow">${escapeHtml(activity.starts_at)}–${escapeHtml(activity.ends_at)}</span><h2>${escapeHtml(activity.name)}</h2><p>${escapeHtml(activity.location)}</p>${activity.link ? `<p><a href="${escapeAttr(activity.link)}" target="_blank" rel="noreferrer">Open event link ↗</a></p>` : ""}<div class="day-session-list">${sessions.map((session) => `<section><span>${escapeHtml(session.starts_at)}–${escapeHtml(session.ends_at)}</span><h3>${escapeHtml(session.title)}</h3><p>${escapeHtml(session.presenter)}</p>${session.description ? `<p>${escapeHtml(session.description)}</p>` : ""}</section>`).join("") || `<p>The detailed public session lineup has not been published.</p>`}</div></article>`;
-      }).join("") || `<section class="panel day-detail-panel"><h2>No public activity scheduled</h2><p>The captain has not added an activity for ${WEEK_DAY_LABELS[day]}.</p></section>`;
+      content = activityCards || `<section class="panel day-detail-panel"><h2>No public activity scheduled</h2><p>The captain has not added an activity for ${WEEK_DAY_LABELS[day]}.</p></section>`;
     } else if (day === "thursday") {
-      content = `<section class="panel day-detail-panel"><span class="eyebrow">Preparation day</span><h2>Prepare for Demo Day</h2><p>No public cohort activity is scheduled. Friday uses ${configuration?.presentation_minutes ?? PRESENTATION_MS / 60_000}-minute demos with ${configuration?.question_minutes ?? QUESTIONS_MS / 60_000} minutes for questions.</p></section>`;
+      content = activityCards || `<section class="panel day-detail-panel"><span class="eyebrow">Preparation day</span><h2>Prepare for Demo Day</h2><p>No public cohort activity is scheduled. Friday uses ${configuration?.presentation_minutes ?? PRESENTATION_MS / 60_000}-minute demos with ${configuration?.question_minutes ?? QUESTIONS_MS / 60_000} minutes for questions.</p></section>`;
     } else {
       const sessions = this.#sessionsForWeek(slot);
       const canCreate = this.#nip07Pubkey === slot.captain_pubkey && Boolean(configuration);
-      content = `<section class="friday-hero"><div><span class="eyebrow">Demo Day</span><h2>${escapeHtml(configuration?.theme ?? `Week ${slot.week_number}`)}</h2><p>${configuration?.presentation_minutes ?? PRESENTATION_MS / 60_000} minutes presenting · ${configuration?.question_minutes ?? QUESTIONS_MS / 60_000} minutes for questions</p></div>${canCreate ? `<a class="button button-primary button-large" href="#/create">Create Demo Day</a>` : ""}</section><section class="card-grid friday-session-grid">${sessions.map((session) => this.#renderDemoSessionCard(session)).join("") || `<div class="empty-state compact"><h3>No Demo Day session yet</h3><p>The existing Demo Day room will appear here once the captain creates it.</p></div>`}</section>`;
+      content = `${activityCards}<section class="friday-hero"><div><span class="eyebrow">Demo Day</span><h2>${escapeHtml(configuration?.theme ?? `Week ${slot.week_number}`)}</h2><p>${configuration?.presentation_minutes ?? PRESENTATION_MS / 60_000} minutes presenting · ${configuration?.question_minutes ?? QUESTIONS_MS / 60_000} minutes for questions</p></div>${canCreate ? `<a class="button button-primary button-large" href="#/create">Create Demo Day</a>` : ""}</section><section class="card-grid friday-session-grid">${sessions.map((session) => this.#renderDemoSessionCard(session)).join("") || `<div class="empty-state compact"><h3>No Demo Day session yet</h3><p>The existing Demo Day room will appear here once the captain creates it.</p></div>`}</section>`;
     }
     return `<section class="day-page"><a class="back-link" href="#/">← Week ${slot.week_number}</a><header class="day-page-header"><span class="eyebrow">${escapeHtml(displayDate(date))} · Atlantic/Madeira</span><h1>${WEEK_DAY_LABELS[day]}</h1></header><nav class="week-day-tabs" aria-label="Week days">${navigation}</nav><div class="day-page-content">${content}</div></section>`;
   }
@@ -688,23 +707,24 @@ export class DemoDayApp {
       }
       return `<section class="narrow-page week-workspace">${publicWeekPreview(publicWeekProjection(draft))}<div class="form-actions"><button class="button button-secondary" data-action="return-to-week-editing" data-week-scope="${escapeAttr(scope)}">Return to editing</button></div></section>`;
     }
-    const group = (day: "tuesday" | "wednesday", heading: string) => {
+    const group = (day: ActivityDay, heading: string) => {
       const activities = draft.activities.filter((item) => item.day === day);
-      const errors = readiness.sections[`${day}_activities`];
+      const errors = readiness.sections.activities;
       const cards = activities.map((activity, index) => {
         const expanded = this.#weekExpanded.has(activity.id) || errors.length > 0;
-        return `<article class="week-editor-card" data-week-card="${escapeAttr(activity.id)}"><header><button class="card-toggle" data-action="toggle-week-card" data-card-id="${escapeAttr(activity.id)}" aria-expanded="${expanded}">${index + 1}. ${escapeHtml(activity.name || "Untitled activity")} · ${escapeHtml(activity.date)} · ${escapeHtml(activity.starts_at)}–${escapeHtml(activity.ends_at)} · ${escapeHtml(activity.location)}</button></header>
+        const summary = activityDetails(activity);
+        return `<article class="week-editor-card" data-week-card="${escapeAttr(activity.id)}"><header><button class="card-toggle" data-action="toggle-week-card" data-card-id="${escapeAttr(activity.id)}" aria-expanded="${expanded}">${index + 1}. ${escapeHtml(activity.name || "Untitled activity")}${summary.length ? ` · ${escapeHtml(summary.join(" · "))}` : ""}</button></header>
           ${expanded ? `<div class="form-stack card-body">
-            <label class="field"><span>Title *</span><input data-week-field="activity:name" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.name)}" maxlength="160" /></label>
-            <label class="field"><span>Date *</span><input type="date" data-week-field="activity:date" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.date)}" /></label>
-            <label class="field"><span>Start time *</span><input type="time" data-week-field="activity:starts_at" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.starts_at)}" /></label>
-            <label class="field"><span>End time *</span><input type="time" data-week-field="activity:ends_at" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.ends_at)}" /></label>
-            <label class="field"><span>Location *</span><input data-week-field="activity:location" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.location)}" maxlength="240" /></label>
-            <label class="field"><span>Link — optional</span><input type="url" data-week-field="activity:link" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.link ?? "")}" /><small>Times use Atlantic/Madeira.</small></label>
+            <label class="field"><span>Title *</span><input data-week-field="activity:name" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.name)}" maxlength="160" required /></label>
+            <label class="field"><span>Date — optional</span><input type="date" data-week-field="activity:date" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.date)}" /></label>
+            <label class="field"><span>Start time — optional</span><input type="time" data-week-field="activity:starts_at" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.starts_at)}" /></label>
+            <label class="field"><span>End time — optional</span><input type="time" data-week-field="activity:ends_at" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.ends_at)}" /></label>
+            <label class="field"><span>Location — optional</span><input data-week-field="activity:location" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.location)}" maxlength="240" /></label>
+            <label class="field"><span>Link — optional</span><input type="url" data-week-field="activity:link" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.link ?? "")}" /><small>Any supplied times use Atlantic/Madeira.</small></label>
           </div>` : ""}
           <div class="card-actions"><button class="button button-secondary" data-action="move-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}" data-direction="-1" ${index === 0 ? "disabled" : ""}>Move earlier</button><button class="button button-secondary" data-action="move-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}" data-direction="1" ${index === activities.length - 1 ? "disabled" : ""}>Move later</button><button class="button button-danger" data-action="request-remove-week-activity" data-week-scope="${escapeAttr(scope)}" data-week-id="${escapeAttr(activity.id)}">Remove activity</button></div></article>`;
       }).join("");
-      return `<section class="week-subsection"><h3>${heading}</h3>${cards || `<div class="empty-state compact"><h4>No activities scheduled</h4><p>Add an activity to this day to continue.</p></div>`}<button class="button button-secondary" data-action="add-week-activity" data-week-scope="${escapeAttr(scope)}" data-day="${day}">Add activity</button></section>`;
+      return `<section class="week-subsection"><h3>${heading}</h3>${cards || `<div class="empty-state compact"><h4>No activities scheduled</h4><p>Add one if this day has a cohort activity.</p></div>`}<button class="button button-secondary" data-action="add-week-activity" data-week-scope="${escapeAttr(scope)}" data-day="${day}">Add activity</button></section>`;
     };
     const fields = draft.proposal_fields.map((proposalField, index) => {
       const expanded = this.#weekExpanded.has(proposalField.id) || readiness.sections.proposal_form.length > 0;
@@ -716,14 +736,14 @@ export class DemoDayApp {
       const removeLabel = this.#weekRemoval.kind === "activity" ? "Remove activity" : "Remove field";
       return `<section class="panel destructive-confirmation" role="dialog" aria-modal="true"><h2>Remove from draft?</h2><p>Remove “${escapeHtml(title)}” from this unpublished draft?</p><div class="form-actions"><button class="button button-secondary" data-action="cancel-week-removal">Cancel</button><button class="button button-danger" data-action="confirm-week-removal">${removeLabel}</button></div></section>`;
     })() : "";
-    const readinessItems = [["Week details", "week_details"], ["Tuesday activities", "tuesday_activities"], ["Wednesday activities", "wednesday_activities"], ["Proposal form", "proposal_form"], ["Demo Day timing", "demo_day_timing"]] as const;
+    const readinessItems = [["Week details", "week_details"], ["Activities", "activities"], ["Proposal form", "proposal_form"], ["Demo Day timing", "demo_day_timing"]] as const;
     const status = draftChanged ? "Changes ready to publish" : persisted ? "Setup published — intake closed" : "Draft";
     if (persisted) void this.#loadCabinData(slot, persisted.event.id, persisted.configuration, this.#cabinSigner());
     return `<section class="narrow-page week-workspace"><span class="eyebrow">Assigned week ${slot.week_number}</span><h1>Week ${slot.week_number}</h1><p>${escapeHtml(slot.start_date)} – ${escapeHtml(slot.end_date)} · Atlantic/Madeira</p><p>Assigned captain: ${escapeHtml(captain.name)}</p><p class="week-status">${status}</p>${draftChanged ? `<p class="week-local-status" aria-live="polite">Changes saved locally</p>` : ""}
       ${confirmation}
       ${this.#weekPublicationError ? `<section class="notice notice-error week-notice" role="alert"><p>${escapeHtml(this.#weekPublicationError)}</p><button class="button button-secondary" data-action="retry-week-publication">Try again</button></section>` : ""}
       <form class="panel form-stack" data-form-action="publish-week" data-draft-scope="${escapeAttr(scope)}"><h2>Week details</h2><label class="field"><span>Theme *</span><input id="week-theme" name="theme" data-week-field="config:theme" value="${escapeAttr(draft.theme)}" maxlength="120" aria-describedby="week-theme-error" ${readiness.sections.week_details.length ? 'aria-invalid="true"' : ""} /></label>${readiness.sections.week_details.length ? `<small id="week-theme-error" class="field-error">${escapeHtml(readiness.sections.week_details[0] ?? "")}</small>` : ""}<label class="field"><span>Public description *</span><textarea id="week-public-description" name="public_description" data-week-field="config:public_description" maxlength="4000" rows="4" aria-describedby="week-public-description-help">${escapeHtml(draft.public_description)}</textarea><small id="week-public-description-help">Visible in the public week preview.</small></label>
-      <section class="week-subsection"><h2>Activities</h2>${group("tuesday", "Tuesday talks")}${group("wednesday", "Wednesday workshops")}</section>
+      <section class="week-subsection"><h2>Activities</h2>${group("monday", "Monday")}${group("tuesday", "Tuesday talks")}${group("wednesday", "Wednesday workshops")}${group("thursday", "Thursday")}${group("friday", "Friday")}</section>
       <section class="week-subsection"><h2>Proposal form</h2>${fields || `<div class="empty-state compact"><h3>No proposal fields yet</h3><p>Add a field before publishing this week.</p></div>`}<button class="button button-secondary" data-action="add-week-field" data-week-scope="${escapeAttr(scope)}">Add field</button></section>
       <section class="week-subsection"><h2>Demo Day timing</h2><label class="field"><span>Presentation duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:presentation_minutes" value="${draft.presentation_minutes}" /></label><label class="field"><span>Question duration *</span><input type="number" min="1" max="180" step="1" data-week-field="config:question_minutes" value="${draft.question_minutes}" /></label><p>Demo Day timing: ${draft.presentation_minutes}:00 presentation + ${draft.question_minutes}:00 questions.</p></section>
       <section class="panel readiness-panel"><h2>Readiness</h2>${readinessItems.map(([label, key]) => readiness.sections[key].length ? `<button class="readiness-action needs-attention" data-action="focus-week-invalid" data-week-scope="${escapeAttr(scope)}" data-week-section="${key}"><strong>${escapeHtml(label)}:</strong> Needs attention</button>` : `<p class="ready"><strong>${escapeHtml(label)}:</strong> Ready</p>`).join("")} ${readiness.valid ? "" : "<p>This section needs attention. Complete the highlighted fields to publish this week.</p>"}<div class="form-actions"><button class="button button-secondary" data-action="preview-week" data-week-scope="${escapeAttr(scope)}">Preview week</button><button class="button button-primary" type="submit" ${readiness.valid ? "" : "disabled"}>${persisted ? "Publish changes" : "Create week"}</button></div></section></form>
@@ -755,7 +775,8 @@ export class DemoDayApp {
       const decision = decisions.get(proposal.proposal_id) ?? "pending";
       const placement = schedule.placements.find((item) => item.proposal_id === proposal.proposal_id);
       const answers = Object.entries(proposal.answers).map(([id, answer]) => `<dt>${escapeHtml(labels.get(id) ?? id)}</dt><dd>${escapeHtml(answer)}</dd>`).join("");
-      const placementForm = decision === "accepted" ? `<form class="form-stack" data-form-action="save-cabin-placement" data-proposal-id="${escapeAttr(proposal.proposal_id)}"><label class="field"><span>Activity</span><select name="activity_id">${configuration.activities.map((item) => `<option value="${escapeAttr(item.id)}" ${placement?.activity_id === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label class="field"><span>Start</span><input type="time" name="starts_at" value="${escapeAttr(placement?.starts_at ?? configuration.activities[0]?.starts_at ?? "18:00")}" required /></label><label class="field"><span>End</span><input type="time" name="ends_at" value="${escapeAttr(placement?.ends_at ?? configuration.activities[0]?.ends_at ?? "19:00")}" required /></label><label class="field"><span>Public title</span><input name="public_title" maxlength="200" value="${escapeAttr(placement?.public_title ?? "")}" required /></label><label class="field"><span>Public presenter</span><input name="public_presenter" maxlength="160" value="${escapeAttr(placement?.public_presenter ?? "")}" required /></label><label class="field"><span>Public description</span><textarea name="public_description" maxlength="1000">${escapeHtml(placement?.public_description ?? "")}</textarea></label><button class="button button-secondary" type="submit">Place in private draft</button></form>` : "";
+      const placementActivity = configuration.activities.find((item) => item.id === placement?.activity_id) ?? configuration.activities[0];
+      const placementForm = decision === "accepted" ? `<form class="form-stack" data-form-action="save-cabin-placement" data-proposal-id="${escapeAttr(proposal.proposal_id)}"><label class="field"><span>Activity</span><select name="activity_id">${configuration.activities.map((item) => `<option value="${escapeAttr(item.id)}" ${placement?.activity_id === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label class="field"><span>Start</span><input type="time" name="starts_at" value="${escapeAttr(placement?.starts_at || placementActivity?.starts_at || "18:00")}" required /></label><label class="field"><span>End</span><input type="time" name="ends_at" value="${escapeAttr(placement?.ends_at || placementActivity?.ends_at || "19:00")}" required /></label><label class="field"><span>Public title</span><input name="public_title" maxlength="200" value="${escapeAttr(placement?.public_title ?? "")}" required /></label><label class="field"><span>Public presenter</span><input name="public_presenter" maxlength="160" value="${escapeAttr(placement?.public_presenter ?? "")}" required /></label><label class="field"><span>Public description</span><textarea name="public_description" maxlength="1000">${escapeHtml(placement?.public_description ?? "")}</textarea></label><button class="button button-secondary" type="submit">Place in private draft</button></form>` : "";
       return `<article class="panel"><h3>Proposal ${escapeHtml(proposal.proposal_id)}</h3><dl>${answers}</dl><p>Decision: <strong>${escapeHtml(decision)}</strong></p><div class="form-actions"><button class="button button-primary" data-action="decide-cabin-proposal" data-proposal-id="${escapeAttr(proposal.proposal_id)}" data-decision="accepted">Accept</button><button class="button button-danger" data-action="decide-cabin-proposal" data-proposal-id="${escapeAttr(proposal.proposal_id)}" data-decision="rejected">Reject</button></div>${placementForm}</article>`;
     }).join("");
     const warnings = scheduleWarnings(schedule, configuration);
@@ -1330,12 +1351,12 @@ export class DemoDayApp {
 
   #focusWeekInvalid(scope: string, section: string, draft: WeekConfigurationV1): void {
     let selector = "#week-theme";
-    if (section === "tuesday_activities" || section === "wednesday_activities") {
-      const activity = draft.activities.find((item) => item.day === (section === "tuesday_activities" ? "tuesday" : "wednesday"));
+    if (section === "activities") {
+      const activity = draft.activities.find((item) => !item.name.trim()) ?? draft.activities[0];
       if (activity) {
         this.#weekExpanded.add(activity.id);
         selector = `[data-week-field="activity:name"][data-week-id="${CSS.escape(activity.id)}"]`;
-      } else selector = `[data-action="add-week-activity"][data-week-scope="${CSS.escape(scope)}"][data-day="${section === "tuesday_activities" ? "tuesday" : "wednesday"}"]`;
+      } else selector = `[data-action="add-week-activity"][data-week-scope="${CSS.escape(scope)}"][data-day="monday"]`;
     } else if (section === "proposal_form") {
       const proposalField = draft.proposal_fields[0];
       if (proposalField) {
@@ -2786,7 +2807,8 @@ export class DemoDayApp {
     }
     if (!scope || !draft) return false;
     if (action === "add-week-activity") {
-      const day = element.dataset.day === "wednesday" ? "wednesday" : "tuesday";
+      const requestedDay = element.dataset.day;
+      const day = ACTIVITY_DAYS.includes(requestedDay as ActivityDay) ? requestedDay as ActivityDay : "monday";
       const next = addActivity(draft, day);
       const added = next.activities.find((item) => !draft.activities.some((current) => current.id === item.id));
       if (added) this.#weekExpanded.add(added.id);
