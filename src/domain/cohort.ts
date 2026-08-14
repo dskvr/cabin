@@ -70,7 +70,7 @@ export function parseCohortManifest(value: unknown): CohortManifestV1 | null {
   if (allowlist.some((pubkey): pubkey is null => pubkey === null)) return null;
   const participant_allowlist = allowlist as string[];
   if (new Set(participant_allowlist).size !== participant_allowlist.length) return null;
-  const totalSlots = Math.floor((dateAt(value.end_date) - dateAt(value.start_date) + 86_400_000) / (7 * 86_400_000));
+  const totalSlots = Math.floor((dateAt(value.end_date) - dateAt(value.start_date)) / (7 * 86_400_000)) + 1;
   if (captains.some((captain) => captain.week_number > totalSlots)) return null;
   return { v: 1, cohort_id: value.cohort_id, start_date: value.start_date, end_date: value.end_date, starting_week: startingWeek, captains, participant_allowlist };
 }
@@ -90,7 +90,7 @@ export function deriveProvisionedWeeks(manifest: CohortManifestV1): ProvisionedW
       cohort_id: manifest.cohort_id,
       week_number: captain.week_number,
       start_date: dateAfter(manifest.start_date, offset),
-      end_date: dateAfter(manifest.start_date, offset + 6),
+      end_date: dateAfter(manifest.start_date, offset + 6) < manifest.end_date ? dateAfter(manifest.start_date, offset + 6) : manifest.end_date,
       timezone: "Atlantic/Madeira" as const,
       captain_pubkey: captain.pubkey,
       participant_allowlist: manifest.participant_allowlist,

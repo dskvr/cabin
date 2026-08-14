@@ -354,6 +354,21 @@ test("session and participant entry builders produce valid, parseable records", 
   const parsedSession = parseSessionEvent(session);
   assert.ok(parsedSession);
 
+  const contextualSession = await buildSessionEvent({
+    sessionD: "sedd-session:00112233445566778899aabbccddeeff",
+    state: { ...sessionState(), cohort_id: "sec-08", week_number: 4, week_configuration_event_id: "ab".repeat(32) },
+    secretKeyHex: captainSecret,
+    createdAt: 100,
+  });
+  assert.equal(parseSessionEvent(contextualSession)?.state.week_number, 4, "new Demo Day sessions retain their cohort week route");
+  const incompleteContext = await buildSessionEvent({
+    sessionD: "sedd-session:ffeeddccbbaa99887766554433221100",
+    state: { ...sessionState(), cohort_id: "sec-08" },
+    secretKeyHex: captainSecret,
+    createdAt: 100,
+  });
+  assert.equal(parseSessionEvent(incompleteContext), null, "partial cohort coordinates fail closed");
+
   const entry = await buildEntryEvent({
     sessionAddress: parsedSession.address,
     sessionD,
@@ -752,6 +767,9 @@ test("week setup route accepts no user-controlled captain authority", () => {
   assert.deepEqual(parseRoute("#/week-setup"), { name: "week-setup" });
   assert.equal(parseRoute("#/week-setup/captain/" + key(94)).name, "invalid");
   assert.equal(parseRoute("#/week-setup/30078:captain:week").name, "invalid");
+  assert.deepEqual(parseRoute("#/week/4/friday"), { name: "week-day", weekNumber: 4, day: "friday" });
+  assert.equal(parseRoute("#/week/4/saturday").name, "invalid");
+  assert.equal(parseRoute("#/week/0/monday").name, "invalid");
 });
 
 test("week event builder and parser require one manifest-captain canonical configuration", async () => {

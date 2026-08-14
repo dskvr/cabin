@@ -45,6 +45,10 @@ export interface DemoDaySessionV1 {
   v: 1;
   type: "session";
   name: string;
+  /** Cohort coordinates copied from the signed week configuration for public week routing. */
+  cohort_id?: string;
+  week_number?: number;
+  week_configuration_event_id?: string;
   created_at_ms: number;
   closed_at_ms: number | null;
   current_demo_pubkey: string | null;

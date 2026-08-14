@@ -101,7 +101,7 @@ import {
 } from "../nostr/zaps.js";
 import { button, captainCard, escapeAttr, escapeHtml, field, identiconDataUri, profileComponent, publicWeekPreview, textarea } from "../ui/html.js";
 import { activateMotion } from "../ui/motion.js";
-import { navigate, parseRoute, sessionNaddr, type AppRoute } from "./router.js";
+import { navigate, parseRoute, sessionNaddr, WEEK_DAYS, type AppRoute, type WeekDay } from "./router.js";
 
 declare const qrcode: (typeNumber: number, errorCorrectionLevel: "M") => {
   addData(data: string, mode: "Alphanumeric"): void;
@@ -179,6 +179,28 @@ interface WindowWithWebLN extends Window {
 type ColorTheme = "dark" | "light";
 
 const THEME_STORAGE_KEY = "sedd-color-theme";
+const WEEK_DAY_LABELS: Record<WeekDay, string> = {
+  monday: "Monday",
+  tuesday: "Tuesday",
+  wednesday: "Wednesday",
+  thursday: "Thursday",
+  friday: "Friday",
+};
+
+function dateAfter(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function weekDayDate(slot: ProvisionedWeek, day: WeekDay): string {
+  return dateAfter(slot.start_date, WEEK_DAYS.indexOf(day));
+}
+
+function displayDate(date: string): string {
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Atlantic/Madeira" })
+    .format(new Date(`${date}T12:00:00Z`));
+}
 
 function storedTheme(): ColorTheme {
   try {
@@ -425,7 +447,9 @@ export class DemoDayApp {
     const pending = this.#repository.pendingCount();
     const motionRouteKey = this.#route.name === "session" || this.#route.name === "display"
       ? `${this.#route.name}:${this.#route.naddr}`
-      : this.#route.name;
+      : this.#route.name === "week-day"
+        ? `${this.#route.name}:${this.#route.weekNumber}:${this.#route.day}`
+        : this.#route.name;
     const animateEntrance = motionRouteKey !== this.#motionRouteKey;
     this.#motionRouteKey = motionRouteKey;
     const motionModalKey = this.#zapModal ? `${this.#zapModal.entryAuthor}:${this.#zapModal.status}` : "";
@@ -455,7 +479,7 @@ export class DemoDayApp {
         `}
         ${this.#notice ? `<div class="notice notice-${escapeAttr(this.#notice.kind)}" ${this.#notice.kind === "error" ? alertRole : announceNotice ? 'role="status" aria-live="polite"' : ""}>${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
         <main class="${this.#route.name === "display" ? "display-main" : "page"}">${page}</main>
-        ${this.#route.name === "display" ? "" : `<footer><nav>${this.#route.name === "session" ? `<a href="#/display/${escapeAttr(this.#route.naddr)}" data-fullscreen-display>Front of room display</a>` : ""}<a href="#/week-setup">Week setup</a><a href="#/create">I AM THE CAPTAIN NOW</a><a href="#/">Active demo days</a><a href="#/advanced">Advanced</a></nav></footer>`}
+        ${this.#route.name === "display" ? "" : `<footer><nav>${this.#route.name === "session" ? `<a href="#/display/${escapeAttr(this.#route.naddr)}" data-fullscreen-display>Front of room display</a>` : ""}<a href="#/week-setup">Week setup</a><a href="#/create">I AM THE CAPTAIN NOW</a><a href="#/">Cohort week</a><a href="#/advanced">Advanced</a></nav></footer>`}
         ${this.#busy ? `<div class="busy-overlay" ${announceBusy ? 'role="status"' : ""}><span class="spinner"></span><strong>${escapeHtml(this.#busy)}</strong></div>` : ""}
         ${this.#renderZapModal()}
       </div>
@@ -501,6 +525,7 @@ export class DemoDayApp {
   #renderRoute(): string {
     switch (this.#route.name) {
       case "home": return this.#renderHome();
+      case "week-day": return this.#renderWeekDay(this.#route.weekNumber, this.#route.day);
       case "create": return this.#renderCreate();
       case "advanced": return this.#renderAdvanced();
       case "week-setup": return this.#renderWeekConfiguration();
@@ -511,45 +536,101 @@ export class DemoDayApp {
   }
 
   #renderHome(): string {
-    const sessions = this.#repository.sessions();
-    const activeSessionCount = sessions.filter((session) => session.state.closed_at_ms === null).length;
-    const identity = getOrCreateIdentity();
-    const cards = sessions.map((session) => {
-      const entries = this.#repository.entriesForSession(session.address);
-      const hasDemo = entries.some((entry) => entry.author === identity.public_key_hex);
-      const captain = this.#profile(session.event.pubkey);
-      const naddr = sessionNaddr(session.event.pubkey, session.d);
-      const closed = session.state.closed_at_ms !== null;
-      return `<article class="session-card ${closed ? "session-card-closed" : "session-card-open"}">
-        <div class="session-card-head">
-          <div><span class="eyebrow session-status ${closed ? "session-status-closed" : "session-status-open"}">${closed ? "Closed demo day" : "Open demo day"}</span><h2>${escapeHtml(session.state.name)}</h2>${profileComponent({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name, size: "lg" })}</div>
-        </div>
-        <div class="session-metrics">
-          <div><strong>${entries.length}</strong><span>participants</span></div>
-        </div>
-        <div class="card-actions">
-          <a class="button button-primary" href="#/session/${escapeAttr(naddr)}">${closed || hasDemo ? "Open" : "Join"}</a>
-        </div>
-      </article>`;
-    }).join("");
-
     void this.#loadPublicCabin();
-    const publicWeeks = (() => {
-      const manifest = parseCohortManifest(COHORT_MANIFEST);
-      if (!manifest) return "";
-      const cards = deriveProvisionedWeeks(manifest).map((slot) => {
-        const publication = this.#repository.weekArchive(slot)?.archive.public_schedule ?? this.#repository.publicSchedule(slot)?.schedule;
-        if (!publication) return "";
-        const activities = publication.activities.map((activity) => `<article class="panel"><h3>${escapeHtml(activity.name)}</h3><p>${escapeHtml(activity.date)} · ${escapeHtml(activity.starts_at)}–${escapeHtml(activity.ends_at)} · ${escapeHtml(activity.location)}</p>${activity.sessions.map((session) => `<div class="week-editor-card"><strong>${escapeHtml(session.title)}</strong><p>${escapeHtml(session.presenter)} · ${escapeHtml(session.starts_at)}–${escapeHtml(session.ends_at)}</p>${session.description ? `<p>${escapeHtml(session.description)}</p>` : ""}</div>`).join("") || `<p>No published sessions.</p>`}</article>`).join("");
-        return `<section class="week-subsection"><span class="eyebrow">Published week ${slot.week_number}</span><h2>Public schedule</h2>${activities}</section>`;
-      }).join("");
-      return cards || (this.#publicCabinLoading ? `<section class="panel" aria-live="polite"><span class="spinner"></span> Loading public schedules…</section>` : "");
-    })();
-    return `${activeSessionCount === 0 ? `<section class="hero">
-      <h1>SOVEREIGN ENGINEERING<br>Demo Day</h1>
-      <a class="button button-primary button-large" href="#/create">I AM THE CAPTAIN NOW</a>
-    </section>` : ""}
-    <section class="card-grid">${cards || `<div class="empty-state compact"><h3>No active demo days found</h3><p>The app is listening on the ten fixed relays. You can start the first session.</p></div>`}</section>${publicWeeks}`;
+    const slot = this.#currentPublicWeek();
+    if (!slot) return `<section class="empty-state"><h1>Cohort week unavailable</h1><p>Check the compiled cohort manifest.</p></section>`;
+    const configuration = this.#publicConfiguration(slot);
+    const publication = this.#repository.weekArchive(slot)?.archive.public_schedule ?? this.#repository.publicSchedule(slot)?.schedule;
+    const sessions = this.#sessionsForWeek(slot);
+    const fridayDate = weekDayDate(slot, "friday");
+    const theme = configuration?.theme ?? `Week ${slot.week_number}`;
+    const description = configuration?.public_description ?? "The public week configuration has not been published yet.";
+    const cards = WEEK_DAYS.map((day) => {
+      const date = weekDayDate(slot, day);
+      const activities = publication?.activities.filter((activity) => activity.day === day)
+        ?? configuration?.activities.filter((activity) => activity.day === day)
+        ?? [];
+      let detail: string;
+      if (day === "monday") {
+        detail = `<p>${escapeHtml(description)}</p>`;
+      } else if (day === "friday") {
+        const timing = configuration ? `${configuration.presentation_minutes} min demos · ${configuration.question_minutes} min questions` : "Demo Day";
+        const live = sessions.filter((session) => session.state.closed_at_ms === null).length;
+        detail = `<p>${escapeHtml(timing)}</p><div class="day-card-metric"><strong>${sessions.length}</strong><span>${live ? `${live} live` : "sessions"}</span></div>`;
+      } else if (activities.length) {
+        detail = `<div class="day-card-events">${activities.slice(0, 2).map((activity) => `<div><strong>${escapeHtml(activity.name)}</strong><span>${escapeHtml(activity.starts_at)}–${escapeHtml(activity.ends_at)}</span><small>${escapeHtml(activity.location)}</small></div>`).join("")}</div>`;
+      } else {
+        detail = `<p>No public activity scheduled.</p>`;
+      }
+      return `<a class="day-card ${day === "friday" ? "day-card-friday" : ""}" href="#/week/${slot.week_number}/${day}" aria-label="Open ${WEEK_DAY_LABELS[day]} details"><span class="eyebrow">${escapeHtml(displayDate(date))}</span><h2>${WEEK_DAY_LABELS[day]}</h2>${detail}<span class="day-card-open">Open day →</span></a>`;
+    }).join("");
+    return `<section class="week-board-header"><div><span class="eyebrow">Cohort week ${slot.week_number}</span><h1>${escapeHtml(theme)}</h1><p>${escapeHtml(description)}</p></div><div class="week-board-range"><span>Monday</span><strong>${escapeHtml(displayDate(slot.start_date))}</strong><span>Friday</span><strong>${escapeHtml(displayDate(fridayDate))}</strong></div></section>
+      ${this.#publicCabinLoading && !configuration ? `<p class="week-board-loading" aria-live="polite"><span class="spinner"></span> Loading week…</p>` : ""}
+      <section class="week-board" aria-label="Week ${slot.week_number} Monday through Friday">${cards}</section>`;
+  }
+
+  #currentPublicWeek(): ProvisionedWeek | null {
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    if (!manifest) return null;
+    const slots = deriveProvisionedWeeks(manifest);
+    const today = new Date().toISOString().slice(0, 10);
+    return slots.find((slot) => slot.start_date <= today && today <= slot.end_date)
+      ?? [...slots].reverse().find((slot) => slot.start_date <= today)
+      ?? slots[0]
+      ?? null;
+  }
+
+  #publicConfiguration(slot: ProvisionedWeek): WeekConfigurationV1 | null {
+    const archive = this.#repository.weekArchive(slot)?.archive.configuration;
+    if (archive) return { ...archive, status: "completed", intake_open: false, base_event_id: null };
+    return this.#repository.getWeek(slot)?.configuration ?? null;
+  }
+
+  #sessionsForWeek(slot: ProvisionedWeek): ParsedSession[] {
+    const current = this.#currentPublicWeek();
+    return this.#repository.sessions().filter((session) =>
+      session.state.cohort_id === slot.cohort_id && session.state.week_number === slot.week_number
+      || session.state.cohort_id === undefined && session.state.week_number === undefined && current?.week_number === slot.week_number,
+    );
+  }
+
+  #renderDemoSessionCard(session: ParsedSession): string {
+    const identity = getOrCreateIdentity();
+    const entries = this.#repository.entriesForSession(session.address);
+    const hasDemo = entries.some((entry) => entry.author === identity.public_key_hex);
+    const captain = this.#profile(session.event.pubkey);
+    const naddr = sessionNaddr(session.event.pubkey, session.d);
+    const closed = session.state.closed_at_ms !== null;
+    return `<article class="session-card ${closed ? "session-card-closed" : "session-card-open"}"><div class="session-card-head"><div><span class="eyebrow session-status ${closed ? "session-status-closed" : "session-status-open"}">${closed ? "Closed demo day" : "Open demo day"}</span><h2>${escapeHtml(session.state.name)}</h2>${profileComponent({ picture: captain.picture, pubkey: session.event.pubkey, name: captain.name, size: "lg" })}</div></div><div class="session-metrics"><div><strong>${entries.length}</strong><span>participants</span></div></div><div class="card-actions"><a class="button button-primary" href="#/session/${escapeAttr(naddr)}">${closed || hasDemo ? "Open" : "Join"}</a></div></article>`;
+  }
+
+  #renderWeekDay(weekNumber: number, day: WeekDay): string {
+    void this.#loadPublicCabin();
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    const slot = manifest ? deriveProvisionedWeeks(manifest).find((candidate) => candidate.week_number === weekNumber) ?? null : null;
+    if (!slot) return `<section class="empty-state"><h1>Week not found</h1><a class="button button-primary" href="#/">Return to cohort week</a></section>`;
+    const configuration = this.#publicConfiguration(slot);
+    const publication = this.#repository.weekArchive(slot)?.archive.public_schedule ?? this.#repository.publicSchedule(slot)?.schedule;
+    const date = weekDayDate(slot, day);
+    const navigation = WEEK_DAYS.map((candidate) => `<a class="week-day-tab ${candidate === day ? "active" : ""} ${candidate === "friday" ? "friday" : ""}" href="#/week/${slot.week_number}/${candidate}" ${candidate === day ? 'aria-current="page"' : ""}>${WEEK_DAY_LABELS[candidate]}</a>`).join("");
+    let content: string;
+    if (day === "monday") {
+      content = `<section class="panel day-detail-panel"><span class="eyebrow">Week overview</span><h2>${escapeHtml(configuration?.theme ?? `Week ${slot.week_number}`)}</h2><p>${escapeHtml(configuration?.public_description ?? "The captain has not published the public week details yet.")}</p><dl class="metadata-list"><div><dt>Timezone</dt><dd>Atlantic/Madeira</dd></div><div><dt>Week</dt><dd>${slot.week_number}</dd></div></dl></section>`;
+    } else if (day === "tuesday" || day === "wednesday") {
+      const publishedActivities = publication?.activities.filter((activity) => activity.day === day) ?? [];
+      const activities = publishedActivities.length ? publishedActivities : configuration?.activities.filter((activity) => activity.day === day) ?? [];
+      content = activities.map((activity) => {
+        const sessions = publication?.activities.find((candidate) => candidate.id === activity.id)?.sessions ?? [];
+        return `<article class="panel day-detail-panel"><span class="eyebrow">${escapeHtml(activity.starts_at)}–${escapeHtml(activity.ends_at)}</span><h2>${escapeHtml(activity.name)}</h2><p>${escapeHtml(activity.location)}</p>${activity.link ? `<p><a href="${escapeAttr(activity.link)}" target="_blank" rel="noreferrer">Open event link ↗</a></p>` : ""}<div class="day-session-list">${sessions.map((session) => `<section><span>${escapeHtml(session.starts_at)}–${escapeHtml(session.ends_at)}</span><h3>${escapeHtml(session.title)}</h3><p>${escapeHtml(session.presenter)}</p>${session.description ? `<p>${escapeHtml(session.description)}</p>` : ""}</section>`).join("") || `<p>The detailed public session lineup has not been published.</p>`}</div></article>`;
+      }).join("") || `<section class="panel day-detail-panel"><h2>No public activity scheduled</h2><p>The captain has not added an activity for ${WEEK_DAY_LABELS[day]}.</p></section>`;
+    } else if (day === "thursday") {
+      content = `<section class="panel day-detail-panel"><span class="eyebrow">Preparation day</span><h2>Prepare for Demo Day</h2><p>No public cohort activity is scheduled. Friday uses ${configuration?.presentation_minutes ?? PRESENTATION_MS / 60_000}-minute demos with ${configuration?.question_minutes ?? QUESTIONS_MS / 60_000} minutes for questions.</p></section>`;
+    } else {
+      const sessions = this.#sessionsForWeek(slot);
+      const canCreate = this.#nip07Pubkey === slot.captain_pubkey && Boolean(configuration);
+      content = `<section class="friday-hero"><div><span class="eyebrow">Demo Day</span><h2>${escapeHtml(configuration?.theme ?? `Week ${slot.week_number}`)}</h2><p>${configuration?.presentation_minutes ?? PRESENTATION_MS / 60_000} minutes presenting · ${configuration?.question_minutes ?? QUESTIONS_MS / 60_000} minutes for questions</p></div>${canCreate ? `<a class="button button-primary button-large" href="#/create">Create Demo Day</a>` : ""}</section><section class="card-grid friday-session-grid">${sessions.map((session) => this.#renderDemoSessionCard(session)).join("") || `<div class="empty-state compact"><h3>No Demo Day session yet</h3><p>The existing Demo Day room will appear here once the captain creates it.</p></div>`}</section>`;
+    }
+    return `<section class="day-page"><a class="back-link" href="#/">← Week ${slot.week_number}</a><header class="day-page-header"><span class="eyebrow">${escapeHtml(displayDate(date))} · Atlantic/Madeira</span><h1>${WEEK_DAY_LABELS[day]}</h1></header><nav class="week-day-tabs" aria-label="Week days">${navigation}</nav><div class="day-page-content">${content}</div></section>`;
   }
 
   async #loadPublicCabin(): Promise<void> {
@@ -558,7 +639,7 @@ export class DemoDayApp {
     if (!manifest) return;
     this.#publicCabinLoading = true;
     try {
-      await Promise.all(deriveProvisionedWeeks(manifest).flatMap((slot) => [this.#repository.refreshPublicSchedule(slot), this.#repository.refreshWeekArchive(slot)]));
+      await Promise.all(deriveProvisionedWeeks(manifest).flatMap((slot) => [this.#repository.refreshWeek(slot), this.#repository.refreshPublicSchedule(slot), this.#repository.refreshWeekArchive(slot)]));
     } finally {
       this.#publicCabinLoading = false;
       this.#publicCabinResolved = true;
@@ -1627,6 +1708,9 @@ export class DemoDayApp {
       v: 1,
       type: "session",
       name,
+      cohort_id: slot.cohort_id,
+      week_number: slot.week_number,
+      week_configuration_event_id: week.event.id,
       created_at_ms: Date.now(),
       closed_at_ms: null,
       current_demo_pubkey: null,

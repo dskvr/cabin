@@ -125,6 +125,12 @@ function parseSessionContent(content: string): DemoDaySessionV1 | null {
   }
   if (!isRecord(value) || value.v !== 1 || value.type !== "session") return null;
   if (typeof value.name !== "string" || value.name.trim().length === 0) return null;
+  const hasWeekContext = "cohort_id" in value || "week_number" in value || "week_configuration_event_id" in value;
+  if (hasWeekContext && (
+    typeof value.cohort_id !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(value.cohort_id) ||
+    typeof value.week_number !== "number" || !Number.isInteger(value.week_number) || value.week_number < 1 ||
+    !isValidEventId(value.week_configuration_event_id)
+  )) return null;
   if (!isSafeMs(value.created_at_ms) || !isSafeMs(value.closed_at_ms, true)) return null;
   if (!(value.current_demo_pubkey === null || isValidHexPubkey(value.current_demo_pubkey))) return null;
   if (!isSafeMs(value.timer_started_at_ms, true)) return null;

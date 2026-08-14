@@ -3,8 +3,12 @@ import type { SelectedSession } from "../domain/types.js";
 import { sessionAddress } from "../domain/utils.js";
 import { decodeNaddr, naddrEncode } from "../nostr/bech32.js";
 
+export const WEEK_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"] as const;
+export type WeekDay = typeof WEEK_DAYS[number];
+
 export type AppRoute =
   | { name: "home" }
+  | { name: "week-day"; weekNumber: number; day: WeekDay }
   | { name: "create" }
   | { name: "advanced" }
   | { name: "week-setup" }
@@ -19,6 +23,10 @@ export function parseRoute(hash = globalThis.location?.hash ?? "#/" ): AppRoute 
   if (parts[0] === "create") return { name: "create" };
   if (parts[0] === "advanced" && parts.length === 1) return { name: "advanced" };
   if (parts[0] === "week-setup" && parts.length === 1) return { name: "week-setup" };
+  if (parts[0] === "week" && parts.length === 3 && /^\d+$/.test(parts[1] ?? "") && WEEK_DAYS.includes(parts[2] as WeekDay)) {
+    const weekNumber = Number(parts[1]);
+    if (Number.isSafeInteger(weekNumber) && weekNumber > 0) return { name: "week-day", weekNumber, day: parts[2] as WeekDay };
+  }
   if ((parts[0] === "session" || parts[0] === "display") && parts[1]) {
     try {
       const decoded = decodeNaddr(parts[1]);

@@ -90,6 +90,21 @@ test("shipped cohort manifest parses and resolves its assigned captain", () => {
   assert.equal(weekForCaptain(manifest, captain.pubkey)?.week_number, captain.week_number);
   const seeded = seedWeekConfiguration(weekForCaptain(manifest, captain.pubkey));
   assert.deepEqual(seeded.activities.map((activity) => activity.date), ["2026-08-11", "2026-08-12"]);
+  const weeks = deriveProvisionedWeeks(manifest);
+  assert.deepEqual(weeks.map((week) => week.week_number), [4, 5, 6]);
+  assert.equal(weeks.at(-1)?.end_date, "2026-08-28", "a partial final week is clamped to the cohort end date");
+});
+
+test("public navigation exposes a five-day week board with Friday highlighted", () => {
+  const appSource = readFileSync(new URL("../src/app/App.ts", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+
+  assert.match(appSource, /WEEK_DAYS\.map/);
+  assert.match(appSource, /#renderWeekDay\(weekNumber: number, day: WeekDay\)/);
+  assert.match(appSource, /week_configuration_event_id: week\.event\.id/);
+  assert.match(styles, /\.week-board \{ display: grid; grid-template-columns: repeat\(5,/);
+  assert.match(styles, /\.day-card-friday \{/);
+  assert.match(styles, /@media \(max-width: 660px\)/);
 });
 
 test("NIP-07 login uses the extension account for signed events", async () => {

@@ -4,6 +4,23 @@ A static, backend-free Nostr application for running a Sovereign Engineering coh
 
 The authoritative product specification and the original implementation plan are included under [`docs/reference/`](docs/reference/).
 
+## Make the homepage show this week
+
+If the homepage says **“The public week configuration has not been published yet,”** the site is built correctly, but the assigned captain has not published that week to Nostr yet.
+
+1. Confirm the captain’s exact NIP-07 account npub is assigned to the current `week_number` in [`src/config/cohort.ts`](src/config/cohort.ts). Changing this file requires rebuilding and redeploying the site.
+2. Select **Login with NIP-07** in the header and approve that same account. The header should show the extension account, not a browser-generated Demo Day identity.
+3. Select **Week setup** in the footer. The app automatically opens the week assigned to the signed-in captain.
+4. Fill the required theme and public description. Add or edit the Tuesday talks, Wednesday workshops, locations, links, proposal fields, and Friday timing as needed.
+5. Clear every **Needs attention** item in the Readiness panel.
+6. Select **Create week** and approve the NIP-07 signature. Existing weeks use **Publish changes** instead. This is the action that publishes the signed week configuration to the fixed Nostr relays.
+7. Return to **Cohort week**. The Monday–Friday homepage will load the published theme, description, activities, and Demo Day timing from Nostr.
+8. Open Friday or select **I AM THE CAPTAIN NOW** to create the Demo Day. This action is only available after the week configuration exists.
+
+Publishing a week does not publish the detailed Tuesday/Wednesday presenter lineup. After accepting proposals and arranging the private schedule, use **Save private schedule**, then **Publish public schedule** to make those session details public.
+
+If **Week setup** says the identity has no assigned week, the extension is exposing a different npub from the one compiled into `captains`. Log out, switch accounts in the extension, and log in again. If signing succeeds but the homepage stays blank, check the relay indicator and use **Publish changes** again; failed relay deliveries remain queued locally for retry.
+
 ## Configure a cohort
 
 Cohort configuration is compiled into the static site from [`src/config/cohort.ts`](src/config/cohort.ts). Update it before building:
@@ -30,7 +47,7 @@ export const COHORT_MANIFEST = {
 - `start_date` and `end_date` are inclusive ISO calendar dates. Week assignments and labels are derived from this range.
 - `starting_week` defaults to `1` and offsets the first week number when an earlier cohort week did not use the site.
 - Each captain entry assigns one signing npub to one week. A captain may change their week’s theme, activities, form, locations, links, and Demo Day timing.
-- `participant_allowlist` contains the signing npubs allowed to submit proposals. It is currently empty in the checked-in configuration and must be populated for proposal intake to work.
+- `participant_allowlist` contains the signing npubs allowed to submit proposals.
 - Atlantic/Madeira is the only supported timezone.
 
 Captain’s Cabin uses the account selected in a NIP-07 browser extension. To collect the correct npubs:
