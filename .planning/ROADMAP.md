@@ -30,11 +30,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. The captain can configure the active proposal form by adding, removing, renaming, reordering, and marking standard fields required or optional, while saved answers remain attached to their original fields after label or order changes.
   4. A new Demo Day uses six-minute presentation and two-minute question durations, and the captain can set a different per-week combination such as one minute plus two minutes.
   5. Only a valid Nostr-signed command from the designated captain changes captain-controlled week or form configuration; unsigned, forged, or non-captain commands are rejected even outside the interface.
-**Plans:** 3 plans
+**Plans:** 4 plans
 Plans:
 - [ ] 01-01-PLAN.md — Prove manifest assignment, deliberate signed publication, and verified repository read-back end to end
 - [ ] 01-02-PLAN.md — Complete the activity, timing, proposal-form, and readiness editor
-- [ ] 01-03-PLAN.md — Deliver exact preview/access/error states and seal revision authorization
+- [ ] 01-03-PLAN.md — Deliver the exact public preview and complete loading/error/responsive/accessibility UI states
+- [ ] 01-04-PLAN.md — Seal signed revision coordination and defense-in-depth Nostr authorization
+**Execution order:** 01-01 → 01-02 → 01-03 → 01-04
 **UI hint:** yes
 
 ### Phase 2: Private Participant Proposals
@@ -82,7 +84,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Secure Week Configuration | 0/3 | Planned | - |
+| 1. Secure Week Configuration | 0/4 | Planned | - |
 | 2. Private Participant Proposals | 0/TBD | Not started | - |
 | 3. Schedule Assembly & Publication | 0/TBD | Not started | - |
 | 4. Week Archive & Reuse | 0/TBD | Not started | - |
