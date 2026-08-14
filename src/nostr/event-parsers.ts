@@ -27,13 +27,19 @@ export interface ParsedWeekConfiguration {
 }
 
 export function parseWeekConfigurationEvent(event: NostrEvent, slot: ProvisionedWeek): ParsedWeekConfiguration | null {
-  if (event.kind !== APP_KIND || !isAssignedCaptain(slot, event.pubkey) || !hasTag(event, "t", "captains-cabin-week")) return null;
-  const d = getTag(event, "d");
-  if (d !== weekD(slot)) return null;
+  if (event.kind !== APP_KIND || !isAssignedCaptain(slot, event.pubkey)) return null;
+  const d = exactTag(event, "d");
+  if (d !== weekD(slot) || exactTag(event, "t") !== "captains-cabin-week") return null;
   if (event.content.length > MAX_WEEK_CONFIGURATION_CONTENT_LENGTH) return null;
   const configuration = parseWeekConfiguration(safeJson(event.content));
   if (!configuration || configuration.cohort_id !== slot.cohort_id || configuration.week_number !== slot.week_number) return null;
   return { event, configuration, d, address: weekAddress(slot) };
+}
+
+/** Require a single canonical coordinate/application tag; duplicate tags are ambiguous. */
+function exactTag(event: NostrEvent, name: string): string | null {
+  const matching = event.tags.filter((tag) => tag.length === 2 && tag[0] === name);
+  return matching.length === 1 && typeof matching[0]?.[1] === "string" ? matching[0][1] : null;
 }
 
 function safeJson(content: string): unknown {

@@ -15,7 +15,7 @@ import type {
 } from "../domain/types.js";
 import { weekD, type ProvisionedWeek } from "../domain/cohort.js";
 import type { ParsedWeekConfiguration } from "./event-parsers.js";
-import { dedupe } from "../domain/utils.js";
+import { compareReplaceable, dedupe } from "../domain/utils.js";
 import { verifyEvent } from "./crypto.js";
 import { EventIndex } from "./event-index.js";
 import { parseParticipantEntryEvent, parseSessionEvent, parseWeekConfigurationEvent } from "./event-parsers.js";
@@ -209,8 +209,15 @@ export class NostrRepository {
   }
 
   getWeek(slot: ProvisionedWeek): ParsedWeekConfiguration | null {
-    const event = this.#index.get(`${APP_KIND}:${slot.captain_pubkey}:${weekD(slot)}`);
-    return event ? parseWeekConfigurationEvent(event, slot) : null;
+    // The generic addressable-event index intentionally stores every verified event.
+    // Week state is stricter: select only semantic, manifest-authorized candidates so
+    // a later validly signed but unauthorized payload can never hide an accepted week.
+    const candidates = this.#index.allEvents()
+      .map((event) => parseWeekConfigurationEvent(event, slot))
+      .filter((parsed): parsed is ParsedWeekConfiguration => parsed !== null);
+    return candidates.reduce<ParsedWeekConfiguration | null>((latest, candidate) =>
+      !latest || compareReplaceable(candidate.event, latest.event) ? candidate : latest,
+    null);
   }
 
   async refreshWeek(slot: ProvisionedWeek): Promise<ParsedWeekConfiguration | null> {

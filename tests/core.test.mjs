@@ -22,12 +22,14 @@ import { EventIndex } from "../dist/assets/nostr/event-index.js";
 import {
   buildEntryEvent,
   buildSessionEvent,
+  buildWeekConfigurationEvent,
   copyProfileToEphemeralKey,
   createPresenterZapRequest,
 } from "../dist/assets/nostr/event-builders.js";
 import {
   parseParticipantEntryEvent,
   parseSessionEvent,
+  parseWeekConfigurationEvent,
 } from "../dist/assets/nostr/event-parsers.js";
 import {
   calculateTimer,
@@ -47,7 +49,9 @@ import {
   updateProposalField,
   validateProposalAnswers,
   validateWeekConfiguration,
+  MAX_WEEK_CONFIGURATION_CONTENT_LENGTH,
 } from "../dist/assets/domain/week.js";
+import { weekD } from "../dist/assets/domain/cohort.js";
 import { parseRoute } from "../dist/assets/app/router.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
 import { calculateFollowSuggestions } from "../dist/assets/domain/follows.js";
@@ -651,4 +655,46 @@ test("week setup route accepts no user-controlled captain authority", () => {
   assert.deepEqual(parseRoute("#/week-setup"), { name: "week-setup" });
   assert.equal(parseRoute("#/week-setup/captain/" + key(94)).name, "invalid");
   assert.equal(parseRoute("#/week-setup/30078:captain:week").name, "invalid");
+});
+
+test("week event builder and parser require one manifest-captain canonical configuration", async () => {
+  const captainSecret = key(95);
+  const slot = {
+    cohort_id: "madeira-2026",
+    week_number: 3,
+    start_date: "2026-01-13",
+    end_date: "2026-01-19",
+    captain_pubkey: getPublicKey(captainSecret),
+    participant_allowlist: [getPublicKey(key(96))],
+  };
+  const configuration = seedWeekConfiguration(slot, {
+    theme: "Canonical configuration",
+    public_description: "One complete, captain-owned configuration.",
+  });
+  const event = await buildWeekConfigurationEvent({ slot, configuration, secretKeyHex: captainSecret, createdAt: 100 });
+  assert.deepEqual(event.tags, [["d", weekD(slot)], ["t", "captains-cabin-week"]]);
+  assert.equal(await verifyEvent(event), true);
+  assert.deepEqual(parseWeekConfigurationEvent(event, slot)?.configuration, configuration);
+  await assert.rejects(
+    buildWeekConfigurationEvent({ slot, configuration, secretKeyHex: key(97), createdAt: 100 }),
+    /assigned captain/,
+  );
+  await assert.rejects(
+    buildWeekConfigurationEvent({ slot, configuration: { ...configuration, week_number: 4 }, secretKeyHex: captainSecret, createdAt: 100 }),
+    /manifest slot/,
+  );
+
+  const signed = async (changes) => finalizeEvent({
+    kind: APP_KIND,
+    created_at: 101,
+    tags: [["d", weekD(slot)], ["t", "captains-cabin-week"]],
+    content: JSON.stringify(configuration),
+    ...changes,
+  }, captainSecret);
+  assert.equal(parseWeekConfigurationEvent(await signed({ kind: APP_KIND + 1 }), slot), null, "kind is fixed");
+  assert.equal(parseWeekConfigurationEvent(await signed({ tags: [["d", weekD(slot)], ["d", weekD(slot)], ["t", "captains-cabin-week"]] }), slot), null, "duplicate d tags are rejected");
+  assert.equal(parseWeekConfigurationEvent(await signed({ tags: [["d", weekD(slot)], ["t", "wrong-app"]] }), slot), null, "application tag is fixed");
+  assert.equal(parseWeekConfigurationEvent(await signed({ content: JSON.stringify({ ...configuration, v: 2 }) }), slot), null, "unsupported version is rejected");
+  assert.equal(parseWeekConfigurationEvent(await signed({ content: "{" }), slot), null, "malformed content is rejected");
+  assert.equal(parseWeekConfigurationEvent(await signed({ content: "x".repeat(MAX_WEEK_CONFIGURATION_CONTENT_LENGTH + 1) }), slot), null, "oversized content is rejected before parsing");
 });
