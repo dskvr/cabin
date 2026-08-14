@@ -577,7 +577,7 @@ test("week workspace ships every loading, error, retry, accessibility, and respo
   assert.match(app, /persisted \? "Publish changes" : "Create week"/, "an assigned captain can create the first week event");
   for (const day of ["monday", "tuesday", "wednesday", "thursday", "friday"]) assert.match(app, new RegExp(`group\\("${day}"`));
   assert.match(app, /data-day="\$\{day\}"/);
-  assert.match(app, /Date — optional/);
+  assert.doesNotMatch(app, /data-week-field="activity:date"/, "an activity inherits the date of its selected weekday");
   assert.match(app, /Location — optional/);
   assert.match(app, /Description — optional/);
   assert.match(app, /WEEK_DRAFT_STORAGE_PREFIX/);

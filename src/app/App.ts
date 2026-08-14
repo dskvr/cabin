@@ -716,7 +716,6 @@ export class DemoDayApp {
           ${expanded ? `<div class="form-stack card-body">
             <label class="field"><span>Title *</span><input data-week-field="activity:name" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.name)}" maxlength="160" required /></label>
             <label class="field"><span>Description — optional</span><textarea data-week-field="activity:description" data-week-id="${escapeAttr(activity.id)}" maxlength="1000" rows="3">${escapeHtml(activity.description ?? "")}</textarea></label>
-            <label class="field"><span>Date — optional</span><input type="date" data-week-field="activity:date" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.date)}" /></label>
             <label class="field"><span>Start time — optional</span><input type="time" data-week-field="activity:starts_at" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.starts_at)}" /></label>
             <label class="field"><span>End time — optional</span><input type="time" data-week-field="activity:ends_at" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.ends_at)}" /></label>
             <label class="field"><span>Location — optional</span><input data-week-field="activity:location" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.location)}" maxlength="240" /></label>
