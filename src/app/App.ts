@@ -182,6 +182,7 @@ interface WindowWithWebLN extends Window {
 type ColorTheme = "dark" | "light";
 
 const THEME_STORAGE_KEY = "sedd-color-theme";
+const WEEK_DRAFT_STORAGE_PREFIX = "captains-cabin-week-draft:";
 const WEEK_DAY_LABELS: Record<WeekDay, string> = {
   monday: "Monday",
   tuesday: "Tuesday",
@@ -566,7 +567,7 @@ export class DemoDayApp {
         ?? configuration?.activities.filter((activity) => activity.day === day)
         ?? defaultActivities.filter((activity) => activity.day === day);
       let detail: string;
-      const activityList = activities.length ? `<div class="day-card-events">${activities.slice(0, 2).map((activity) => `<div><strong>${escapeHtml(activity.name)}</strong>${activityTime(activity) ? `<span>${escapeHtml(activityTime(activity))}</span>` : ""}${activity.location ? `<small>${escapeHtml(activity.location)}</small>` : ""}</div>`).join("")}</div>` : "";
+      const activityList = activities.length ? `<div class="day-card-events">${activities.slice(0, 2).map((activity) => `<div><strong>${escapeHtml(activity.name)}</strong>${activity.description ? `<p>${escapeHtml(activity.description)}</p>` : ""}${activityTime(activity) ? `<span>${escapeHtml(activityTime(activity))}</span>` : ""}${activity.location ? `<small>${escapeHtml(activity.location)}</small>` : ""}</div>`).join("")}</div>` : "";
       if (day === "monday") {
         detail = `<p>${escapeHtml(description)}</p>${activityList}`;
       } else if (day === "friday") {
@@ -631,7 +632,7 @@ export class DemoDayApp {
     const activityCards = activities.map((activity) => {
       const sessions = publication?.activities.find((candidate) => candidate.id === activity.id)?.sessions ?? [];
       const details = activityDetails(activity);
-      return `<article class="panel day-detail-panel">${details.length ? `<span class="eyebrow">${escapeHtml(details.join(" · "))}</span>` : ""}<h2>${escapeHtml(activity.name)}</h2>${activity.link ? `<p><a href="${escapeAttr(activity.link)}" target="_blank" rel="noreferrer">Open event link ↗</a></p>` : ""}${sessions.length ? `<div class="day-session-list">${sessions.map((session) => `<section><span>${escapeHtml(session.starts_at)}–${escapeHtml(session.ends_at)}</span><h3>${escapeHtml(session.title)}</h3><p>${escapeHtml(session.presenter)}</p>${session.description ? `<p>${escapeHtml(session.description)}</p>` : ""}</section>`).join("")}</div>` : ""}</article>`;
+      return `<article class="panel day-detail-panel">${details.length ? `<span class="eyebrow">${escapeHtml(details.join(" · "))}</span>` : ""}<h2>${escapeHtml(activity.name)}</h2>${activity.description ? `<p>${escapeHtml(activity.description)}</p>` : ""}${activity.link ? `<p><a href="${escapeAttr(activity.link)}" target="_blank" rel="noreferrer">Open event link ↗</a></p>` : ""}${sessions.length ? `<div class="day-session-list">${sessions.map((session) => `<section><span>${escapeHtml(session.starts_at)}–${escapeHtml(session.ends_at)}</span><h3>${escapeHtml(session.title)}</h3><p>${escapeHtml(session.presenter)}</p>${session.description ? `<p>${escapeHtml(session.description)}</p>` : ""}</section>`).join("")}</div>` : ""}</article>`;
     }).join("");
     let content: string;
     if (day === "monday") {
@@ -716,6 +717,7 @@ export class DemoDayApp {
         return `<article class="week-editor-card" data-week-card="${escapeAttr(activity.id)}"><header><button class="card-toggle" data-action="toggle-week-card" data-card-id="${escapeAttr(activity.id)}" aria-expanded="${expanded}">${index + 1}. ${escapeHtml(activity.name || "Untitled activity")}${summary.length ? ` · ${escapeHtml(summary.join(" · "))}` : ""}</button></header>
           ${expanded ? `<div class="form-stack card-body">
             <label class="field"><span>Title *</span><input data-week-field="activity:name" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.name)}" maxlength="160" required /></label>
+            <label class="field"><span>Description — optional</span><textarea data-week-field="activity:description" data-week-id="${escapeAttr(activity.id)}" maxlength="1000" rows="3">${escapeHtml(activity.description ?? "")}</textarea></label>
             <label class="field"><span>Date — optional</span><input type="date" data-week-field="activity:date" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.date)}" /></label>
             <label class="field"><span>Start time — optional</span><input type="time" data-week-field="activity:starts_at" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.starts_at)}" /></label>
             <label class="field"><span>End time — optional</span><input type="time" data-week-field="activity:ends_at" data-week-id="${escapeAttr(activity.id)}" value="${escapeAttr(activity.ends_at)}" /></label>
@@ -1319,9 +1321,37 @@ export class DemoDayApp {
   #weekDraft(scope: string, seed: WeekConfigurationV1): WeekConfigurationV1 {
     const existing = this.#weekDrafts.get(scope);
     if (existing) return existing;
+    try {
+      const raw = globalThis.localStorage.getItem(`${WEEK_DRAFT_STORAGE_PREFIX}${scope}`);
+      const stored = raw ? JSON.parse(raw) as { baseEventId?: unknown; draft?: unknown } : null;
+      const restored = stored && stored.baseEventId === (this.#weekDraftBaseEvents.get(scope) ?? null) ? parseWeekConfiguration(stored.draft) : null;
+      if (restored && restored.cohort_id === seed.cohort_id && restored.week_number === seed.week_number) {
+        this.#weekDrafts.set(scope, restored);
+        return restored;
+      }
+    } catch {
+      // Ignore corrupt or unavailable local draft storage.
+    }
     const draft = structuredClone(seed);
     this.#weekDrafts.set(scope, draft);
     return draft;
+  }
+
+  #setWeekDraft(scope: string, draft: WeekConfigurationV1): void {
+    this.#weekDrafts.set(scope, draft);
+    try {
+      globalThis.localStorage.setItem(`${WEEK_DRAFT_STORAGE_PREFIX}${scope}`, JSON.stringify({ baseEventId: this.#weekDraftBaseEvents.get(scope) ?? null, draft }));
+    } catch {
+      // Editing remains available when storage is unavailable.
+    }
+  }
+
+  #discardStoredWeekDraft(scope: string): void {
+    try {
+      globalThis.localStorage.removeItem(`${WEEK_DRAFT_STORAGE_PREFIX}${scope}`);
+    } catch {
+      // Storage cleanup is best-effort.
+    }
   }
 
   #clearDraftScope(scope: string): void {
@@ -1330,6 +1360,7 @@ export class DemoDayApp {
     }
     this.#weekDraftBaseEvents.delete(scope);
     this.#weekDrafts.delete(scope);
+    this.#discardStoredWeekDraft(scope);
   }
 
   async #refreshWeekConfiguration(slot: ProvisionedWeek): Promise<void> {
@@ -2159,11 +2190,11 @@ export class DemoDayApp {
       const [kind, name] = weekField.split(":");
       if (kind === "config" && name) {
         const value = name.endsWith("_minutes") ? Number(target.value) : target.value;
-        this.#weekDrafts.set(scope!, { ...draft, [name]: value });
+        this.#setWeekDraft(scope!, { ...draft, [name]: value });
       } else if (kind === "activity" && name && id) {
-        this.#weekDrafts.set(scope!, updateActivity(draft, id, { [name]: target.value }));
+        this.#setWeekDraft(scope!, updateActivity(draft, id, { [name]: target.value }));
       } else if (kind === "field" && name && id) {
-        this.#weekDrafts.set(scope!, updateProposalField(draft, id, { [name]: name === "required" && target instanceof HTMLInputElement ? target.checked : target.value }));
+        this.#setWeekDraft(scope!, updateProposalField(draft, id, { [name]: name === "required" && target instanceof HTMLInputElement ? target.checked : target.value }));
       }
       return;
     }
@@ -2406,8 +2437,10 @@ export class DemoDayApp {
     const configuration = { ...latest.configuration, status: "active" as const, intake_open: opening, base_event_id: latest.event.id };
     const event = await buildWeekConfigurationEventWithSigner({ slot, configuration, signer, createdAt: nextCreatedAt(latest.event.created_at) });
     await this.#repository.publish(event);
-    this.#weekDrafts.set(`week-${slot.week_number}`, structuredClone(configuration));
-    this.#weekDraftBaseEvents.set(`week-${slot.week_number}`, event.id);
+    const weekScope = `week-${slot.week_number}`;
+    this.#weekDrafts.set(weekScope, structuredClone(configuration));
+    this.#weekDraftBaseEvents.set(weekScope, event.id);
+    this.#discardStoredWeekDraft(weekScope);
     this.#notice = { kind: "success", text: opening ? "Proposal intake opened." : "Proposal intake closed." };
   }
 
@@ -2466,8 +2499,9 @@ export class DemoDayApp {
     if (!source) throw new Error("Archived configuration is unavailable");
     const completeSource = { ...source, status: "completed" as const, intake_open: false, base_event_id: null };
     const clone = cloneWeekConfiguration(completeSource, slot, () => randomHex(8));
-    this.#weekDrafts.set(`week-${slot.week_number}`, clone);
-    this.#weekDraftBaseEvents.set(`week-${slot.week_number}`, this.#repository.getWeek(slot)?.event.id ?? null);
+    const weekScope = `week-${slot.week_number}`;
+    this.#weekDraftBaseEvents.set(weekScope, this.#repository.getWeek(slot)?.event.id ?? null);
+    this.#setWeekDraft(weekScope, clone);
     this.#privateSchedules.delete(scope);
     this.#notice = { kind: "info", text: `Week ${sourceWeek} configuration cloned locally with fresh IDs. Review and publish when ready.` };
     this.requestRender();
@@ -2487,6 +2521,7 @@ export class DemoDayApp {
       if (acceptedPending?.event.id === pending.id) {
         this.#weekDrafts.set(scope, structuredClone(acceptedPending.configuration));
         this.#weekDraftBaseEvents.set(scope, acceptedPending.event.id);
+        this.#discardStoredWeekDraft(scope);
         this.#notice = { kind: "success", text: "Week published. Intake remains closed." };
         return;
       }
@@ -2510,6 +2545,7 @@ export class DemoDayApp {
     if (accepted?.event.id !== event.id) throw new Error("The signed week configuration was not read back from the repository.");
     this.#weekDrafts.set(scope, structuredClone(accepted.configuration));
     this.#weekDraftBaseEvents.set(scope, accepted.event.id);
+    this.#discardStoredWeekDraft(scope);
     this.#notice = { kind: "success", text: "Week published. Intake remains closed." };
   }
 
@@ -2798,7 +2834,7 @@ export class DemoDayApp {
         const items = removal.kind === "activity" ? pendingDraft.activities.filter((item) => item.day === pendingDraft.activities.find((candidate) => candidate.id === removal.id)?.day) : pendingDraft.proposal_fields;
         const index = items.findIndex((item) => item.id === removal.id);
         nextId = items[index + 1]?.id ?? items[index - 1]?.id ?? "";
-        this.#weekDrafts.set(removal.scope, removal.kind === "activity" ? removeActivity(pendingDraft, removal.id) : removeProposalField(pendingDraft, removal.id));
+        this.#setWeekDraft(removal.scope, removal.kind === "activity" ? removeActivity(pendingDraft, removal.id) : removeProposalField(pendingDraft, removal.id));
       }
       this.#weekRemoval = null;
       this.requestRender();
@@ -2812,10 +2848,10 @@ export class DemoDayApp {
       const next = addActivity(draft, day);
       const added = next.activities.find((item) => !draft.activities.some((current) => current.id === item.id));
       if (added) this.#weekExpanded.add(added.id);
-      this.#weekDrafts.set(scope, next);
+      this.#setWeekDraft(scope, next);
     } else if (action === "move-week-activity") {
       const id = element.dataset.weekId;
-      if (id) this.#weekDrafts.set(scope, moveActivity(draft, id, element.dataset.direction === "-1" ? -1 : 1));
+      if (id) this.#setWeekDraft(scope, moveActivity(draft, id, element.dataset.direction === "-1" ? -1 : 1));
     } else if (action === "request-remove-week-activity") {
       const id = element.dataset.weekId;
       if (id) this.#weekRemoval = { scope, kind: "activity", id };
@@ -2823,10 +2859,10 @@ export class DemoDayApp {
       const next = addProposalField(draft);
       const added = next.proposal_fields.find((item) => !draft.proposal_fields.some((current) => current.id === item.id));
       if (added) this.#weekExpanded.add(added.id);
-      this.#weekDrafts.set(scope, next);
+      this.#setWeekDraft(scope, next);
     } else if (action === "move-week-field") {
       const id = element.dataset.weekId;
-      if (id) this.#weekDrafts.set(scope, moveProposalField(draft, id, element.dataset.direction === "-1" ? -1 : 1));
+      if (id) this.#setWeekDraft(scope, moveProposalField(draft, id, element.dataset.direction === "-1" ? -1 : 1));
     } else if (action === "request-remove-week-field") {
       const id = element.dataset.weekId;
       if (id) this.#weekRemoval = { scope, kind: "field", id };

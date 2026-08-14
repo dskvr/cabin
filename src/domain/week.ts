@@ -16,6 +16,7 @@ export interface WeekActivityV1 {
   id: string;
   day: ActivityDay;
   name: string;
+  description?: string | undefined;
   date: string;
   starts_at: string;
   ends_at: string;
@@ -46,7 +47,7 @@ export interface PublicWeekProjection {
   theme: string;
   public_description: string;
   timezone: "Atlantic/Madeira";
-  activities: Array<Pick<WeekActivityV1, "day" | "name" | "date" | "starts_at" | "ends_at" | "location" | "link">>;
+  activities: Array<Pick<WeekActivityV1, "day" | "name" | "description" | "date" | "starts_at" | "ends_at" | "location" | "link">>;
   proposal_fields: Array<Pick<ProposalFieldV1, "label" | "required">>;
   presentation_minutes: number;
   question_minutes: number;
@@ -74,6 +75,7 @@ function activity(value: unknown): value is WeekActivityV1 {
     && identifier(value.id)
     && ACTIVITY_DAYS.includes(value.day as ActivityDay)
     && text(value.name, 1, 160)
+    && (value.description === undefined || typeof value.description === "string" && value.description.length <= 1_000)
     && (value.date === "" || calendarDate(value.date))
     && (value.starts_at === "" || time(value.starts_at))
     && (value.ends_at === "" || time(value.ends_at))
@@ -97,8 +99,8 @@ export function seedWeekConfiguration(slot: ProvisionedWeek, edits: Pick<WeekCon
     v: 1, type: "week-configuration", cohort_id: slot.cohort_id, week_number: slot.week_number, timezone: "Atlantic/Madeira", status: "setup", intake_open: false,
     theme: edits.theme, public_description: edits.public_description,
     activities: [
-      { id: `week-${slot.week_number}-tuesday-talk`, day: "tuesday", name: "Tuesday talks", date: dateAfter(slot.start_date, 1), starts_at: "18:00", ends_at: "20:00", location: "To be confirmed", link: null },
-      { id: `week-${slot.week_number}-wednesday-workshop`, day: "wednesday", name: "Wednesday workshop", date: dateAfter(slot.start_date, 2), starts_at: "18:00", ends_at: "20:00", location: "To be confirmed", link: null },
+      { id: `week-${slot.week_number}-tuesday-talk`, day: "tuesday", name: "Tuesday talks", description: "", date: dateAfter(slot.start_date, 1), starts_at: "18:00", ends_at: "20:00", location: "To be confirmed", link: null },
+      { id: `week-${slot.week_number}-wednesday-workshop`, day: "wednesday", name: "Wednesday workshop", description: "", date: dateAfter(slot.start_date, 2), starts_at: "18:00", ends_at: "20:00", location: "To be confirmed", link: null },
     ],
     proposal_fields: [
       { id: `week-${slot.week_number}-proposal-title`, label: "Proposal title", required: true },
@@ -125,8 +127,8 @@ export function publicWeekProjection(configuration: WeekConfigurationV1): Public
     theme: configuration.theme,
     public_description: configuration.public_description,
     timezone: configuration.timezone,
-    activities: configuration.activities.map(({ day, name, date, starts_at, ends_at, location, link }) => ({
-      day, name, date, starts_at, ends_at, location, link: link ? normalizeOptionalUrl(link) : null,
+    activities: configuration.activities.map(({ day, name, description, date, starts_at, ends_at, location, link }) => ({
+      day, name, description, date, starts_at, ends_at, location, link: link ? normalizeOptionalUrl(link) : null,
     })),
     proposal_fields: configuration.proposal_fields.map(({ label, required }) => ({ label, required })),
     presentation_minutes: configuration.presentation_minutes,
@@ -150,7 +152,7 @@ function nextId(existing: Iterable<string>, prefix: string): string {
 export function addActivity(configuration: WeekConfigurationV1, day: WeekActivityV1["day"]): WeekConfigurationV1 {
   if (configuration.activities.length >= MAX_ACTIVITIES) return configuration;
   const id = nextId(configuration.activities.map((item) => item.id), `week-${configuration.week_number}-${day}-activity`);
-  const added: WeekActivityV1 = { id, day, name: "New activity", date: "", starts_at: "", ends_at: "", location: "", link: null };
+  const added: WeekActivityV1 = { id, day, name: "New activity", description: "", date: "", starts_at: "", ends_at: "", location: "", link: null };
   const lastIndex = configuration.activities.reduce((index, item, current) => item.day === day ? current : index, -1);
   return { ...configuration, activities: [...configuration.activities.slice(0, lastIndex + 1), added, ...configuration.activities.slice(lastIndex + 1)] };
 }

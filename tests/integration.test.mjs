@@ -574,6 +574,9 @@ test("week workspace ships every loading, error, retry, accessibility, and respo
   assert.match(app, /data-day="\$\{day\}"/);
   assert.match(app, /Date — optional/);
   assert.match(app, /Location — optional/);
+  assert.match(app, /Description — optional/);
+  assert.match(app, /WEEK_DRAFT_STORAGE_PREFIX/);
+  assert.match(app, /#setWeekDraft/);
   assert.match(app, /seedWeekConfiguration\(slot\)\.activities/, "public navigation shows the safe Tuesday and Wednesday defaults before first publication");
 });
 

@@ -754,7 +754,7 @@ test("captains can add title-only activities to every weekday", () => {
     const added = configuration.activities.find((item) => !previousIds.has(item.id));
     assert.ok(added);
     configuration = updateActivity(configuration, added.id, { name: `${day} activity` });
-    assert.deepEqual({ date: added.date, starts_at: added.starts_at, ends_at: added.ends_at, location: added.location, link: added.link }, { date: "", starts_at: "", ends_at: "", location: "", link: null });
+    assert.deepEqual({ description: added.description, date: added.date, starts_at: added.starts_at, ends_at: added.ends_at, location: added.location, link: added.link }, { description: "", date: "", starts_at: "", ends_at: "", location: "", link: null });
   }
   assert.equal(validateWeekConfiguration(configuration).valid, true);
   assert.ok(parseWeekConfiguration(configuration), "title-only activities are valid signed configuration data");
@@ -790,12 +790,13 @@ test("public week projection keeps an exact safe allowlist and normalized public
   const slot = { cohort_id: "madeira-2026", week_number: 3, start_date: "2026-01-13", end_date: "2026-01-19", captain_pubkey: key(92), participant_allowlist: [key(93)] };
   const configuration = seedWeekConfiguration(slot, { theme: "<img src=x onerror=alert(1)>", public_description: "<script>unsafe</script>" });
   configuration.activities[0].location = "<b>Harbour</b>";
+  configuration.activities[0].description = "<em>Public activity details</em>";
   configuration.activities[0].link = "javascript:alert(1)";
   configuration.base_event_id = "aa".repeat(32);
 
   const projection = publicWeekProjection(configuration);
   assert.deepEqual(Object.keys(projection).sort(), ["activities", "presentation_minutes", "proposal_fields", "public_description", "question_minutes", "theme", "timezone"]);
-  assert.deepEqual(Object.keys(projection.activities[0]).sort(), ["date", "day", "ends_at", "link", "location", "name", "starts_at"]);
+  assert.deepEqual(Object.keys(projection.activities[0]).sort(), ["date", "day", "description", "ends_at", "link", "location", "name", "starts_at"]);
   assert.deepEqual(Object.keys(projection.proposal_fields[0]).sort(), ["label", "required"]);
   assert.equal(projection.activities[0].link, null, "unsafe schemes never reach the public projection");
   assert.equal("participant_allowlist" in projection, false);

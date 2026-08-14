@@ -142,7 +142,7 @@ export function publicWeekPreview(projection: PublicWeekProjection): string {
   const agenda = projection.activities.map((activity) => {
     const time = activity.starts_at && activity.ends_at ? `${activity.starts_at}–${activity.ends_at}` : activity.starts_at ? `Starts ${activity.starts_at}` : activity.ends_at ? `Ends ${activity.ends_at}` : "";
     const details = [activity.date, time, activity.location].filter(Boolean).join(" · ");
-    return `<li><strong>${escapeHtml(activity.name)}</strong>${details ? `<span>${escapeHtml(details)}</span>` : ""}${activity.link ? `<a href="${escapeAttr(activity.link)}" target="_blank" rel="noreferrer">Open link</a>` : ""}</li>`;
+    return `<li><strong>${escapeHtml(activity.name)}</strong>${activity.description ? `<p>${escapeHtml(activity.description)}</p>` : ""}${details ? `<span>${escapeHtml(details)}</span>` : ""}${activity.link ? `<a href="${escapeAttr(activity.link)}" target="_blank" rel="noreferrer">Open link</a>` : ""}</li>`;
   }).join("");
   const fields = projection.proposal_fields.map((proposalField) => `<li>${escapeHtml(proposalField.label)}${proposalField.required ? " <strong>Required</strong>" : ""}</li>`).join("");
   return `<section class="week-preview" aria-labelledby="week-preview-heading"><span class="eyebrow">Public week preview</span><h1 id="week-preview-heading">${escapeHtml(projection.theme)}</h1><p>${escapeHtml(projection.public_description)}</p><section><h2>Agenda</h2><ol class="week-preview-list">${agenda}</ol></section><section><h2>Demo Day timing</h2><p>${projection.presentation_minutes}:00 presentation + ${projection.question_minutes}:00 questions.</p></section><section><h2>Proposal fields</h2><ul class="week-preview-list">${fields}</ul></section></section>`;

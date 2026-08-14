@@ -63,6 +63,7 @@ export interface PublicSchedule {
     id: string;
     day: WeekActivityV1["day"];
     name: string;
+    description?: string | undefined;
     date: string;
     starts_at: string;
     ends_at: string;
@@ -191,8 +192,8 @@ export function publicScheduleProjection(
     v: 1, type: "captains-cabin-public-schedule", publication_id: publicationId,
     cohort_id: configuration.cohort_id, week_number: configuration.week_number, timezone: configuration.timezone,
     source_configuration_event_id: schedule.configuration_event_id, source_draft_event_id: sourceDraftEventId, published_at_ms: publishedAtMs,
-    activities: configuration.activities.map(({ id, day, name, date, starts_at, ends_at, location, link }) => ({
-      id, day, name, date, starts_at, ends_at, location, link,
+    activities: configuration.activities.map(({ id, day, name, description, date, starts_at, ends_at, location, link }) => ({
+      id, day, name, description, date, starts_at, ends_at, location, link,
       sessions: schedule.placements.filter((item) => item.activity_id === id && accepted.has(item.proposal_id)).map((item) => ({
         id: item.id, starts_at: item.starts_at, ends_at: item.ends_at, title: item.public_title,
         presenter: item.public_presenter, description: item.public_description,
@@ -204,9 +205,9 @@ export function publicScheduleProjection(
 export function parsePublicSchedule(value: unknown): PublicSchedule | null {
   const topKeys = ["v", "type", "publication_id", "cohort_id", "week_number", "timezone", "source_configuration_event_id", "source_draft_event_id", "published_at_ms", "activities"];
   if (!isRecord(value) || Object.keys(value).some((key) => !topKeys.includes(key)) || value.v !== 1 || value.type !== "captains-cabin-public-schedule" || typeof value.publication_id !== "string" || !ID.test(value.publication_id) || typeof value.cohort_id !== "string" || !ID.test(value.cohort_id) || typeof value.week_number !== "number" || !Number.isInteger(value.week_number) || value.week_number < 1 || value.timezone !== "Atlantic/Madeira" || !isValidEventId(value.source_configuration_event_id) || !isValidEventId(value.source_draft_event_id) || !safeMs(value.published_at_ms) || !Array.isArray(value.activities) || value.activities.length > 64) return null;
-  const activityKeys = ["id", "day", "name", "date", "starts_at", "ends_at", "location", "link", "sessions"];
+  const activityKeys = ["id", "day", "name", "description", "date", "starts_at", "ends_at", "location", "link", "sessions"];
   const sessionKeys = ["id", "starts_at", "ends_at", "title", "presenter", "description"];
-  if (!value.activities.every((activity) => isRecord(activity) && !Object.keys(activity).some((key) => !activityKeys.includes(key)) && typeof activity.id === "string" && ID.test(activity.id) && ["monday", "tuesday", "wednesday", "thursday", "friday"].includes(String(activity.day)) && boundedText(activity.name, 160) && typeof activity.date === "string" && (activity.date === "" || /^\d{4}-\d{2}-\d{2}$/.test(activity.date)) && typeof activity.starts_at === "string" && (activity.starts_at === "" || time(activity.starts_at)) && typeof activity.ends_at === "string" && (activity.ends_at === "" || time(activity.ends_at)) && (!(activity.starts_at && activity.ends_at) || activity.starts_at < activity.ends_at) && boundedText(activity.location, 240, true) && (activity.link === null || typeof activity.link === "string" && /^https?:\/\//.test(activity.link)) && Array.isArray(activity.sessions) && activity.sessions.length <= MAX_PLACEMENTS && activity.sessions.every((session) => isRecord(session) && !Object.keys(session).some((key) => !sessionKeys.includes(key)) && typeof session.id === "string" && ID.test(session.id) && time(session.starts_at) && time(session.ends_at) && session.starts_at < session.ends_at && boundedText(session.title, 200) && boundedText(session.presenter, 160) && boundedText(session.description, 1_000, true)))) return null;
+  if (!value.activities.every((activity) => isRecord(activity) && !Object.keys(activity).some((key) => !activityKeys.includes(key)) && typeof activity.id === "string" && ID.test(activity.id) && ["monday", "tuesday", "wednesday", "thursday", "friday"].includes(String(activity.day)) && boundedText(activity.name, 160) && (activity.description === undefined || boundedText(activity.description, 1_000, true)) && typeof activity.date === "string" && (activity.date === "" || /^\d{4}-\d{2}-\d{2}$/.test(activity.date)) && typeof activity.starts_at === "string" && (activity.starts_at === "" || time(activity.starts_at)) && typeof activity.ends_at === "string" && (activity.ends_at === "" || time(activity.ends_at)) && (!(activity.starts_at && activity.ends_at) || activity.starts_at < activity.ends_at) && boundedText(activity.location, 240, true) && (activity.link === null || typeof activity.link === "string" && /^https?:\/\//.test(activity.link)) && Array.isArray(activity.sessions) && activity.sessions.length <= MAX_PLACEMENTS && activity.sessions.every((session) => isRecord(session) && !Object.keys(session).some((key) => !sessionKeys.includes(key)) && typeof session.id === "string" && ID.test(session.id) && time(session.starts_at) && time(session.ends_at) && session.starts_at < session.ends_at && boundedText(session.title, 200) && boundedText(session.presenter, 160) && boundedText(session.description, 1_000, true)))) return null;
   const schedule = value as unknown as PublicSchedule;
   const activityIds = schedule.activities.map((item) => item.id);
   const sessionIds = schedule.activities.flatMap((item) => item.sessions.map((session) => session.id));
