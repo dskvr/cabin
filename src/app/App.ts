@@ -516,7 +516,7 @@ export class DemoDayApp {
       const manifest = parseCohortManifest(COHORT_MANIFEST);
       if (!manifest) return "";
       const cards = deriveProvisionedWeeks(manifest).map((slot) => {
-        const publication = this.#repository.publicSchedule(slot)?.schedule ?? this.#repository.weekArchive(slot)?.archive.public_schedule;
+        const publication = this.#repository.weekArchive(slot)?.archive.public_schedule ?? this.#repository.publicSchedule(slot)?.schedule;
         if (!publication) return "";
         const activities = publication.activities.map((activity) => `<article class="panel"><h3>${escapeHtml(activity.name)}</h3><p>${escapeHtml(activity.date)} · ${escapeHtml(activity.starts_at)}–${escapeHtml(activity.ends_at)} · ${escapeHtml(activity.location)}</p>${activity.sessions.map((session) => `<div class="week-editor-card"><strong>${escapeHtml(session.title)}</strong><p>${escapeHtml(session.presenter)} · ${escapeHtml(session.starts_at)}–${escapeHtml(session.ends_at)}</p>${session.description ? `<p>${escapeHtml(session.description)}</p>` : ""}</div>`).join("") || `<p>No published sessions.</p>`}</article>`).join("");
         return `<section class="week-subsection"><span class="eyebrow">Published week ${slot.week_number}</span><h2>Public schedule</h2>${activities}</section>`;
@@ -546,8 +546,8 @@ export class DemoDayApp {
 
   #renderWeekConfiguration(): string {
     const manifest = parseCohortManifest(COHORT_MANIFEST);
-    const identity = loadIdentity();
-    if (!manifest || !identity) {
+    const identity = getOrCreateIdentity();
+    if (!manifest) {
       return `<section class="panel" aria-live="polite"><span class="spinner"></span> Loading week configuration…</section>`;
     }
     const captainSlot = weekForCaptain(manifest, identity.public_key_hex);
@@ -574,7 +574,7 @@ export class DemoDayApp {
       return this.#renderProposalWorkspace(slot, persisted.event.id, persisted.configuration, identity.public_key_hex);
     }
     if (persisted.configuration.status === "completed") {
-      const publication = this.#repository.publicSchedule(slot)?.schedule ?? this.#repository.weekArchive(slot)?.archive.public_schedule;
+      const publication = this.#repository.weekArchive(slot)?.archive.public_schedule ?? this.#repository.publicSchedule(slot)?.schedule;
       return `<section class="narrow-page week-workspace"><span class="eyebrow">Archived week ${slot.week_number}</span><h1>${escapeHtml(persisted.configuration.theme)}</h1><section class="panel"><h2>Read-only archive</h2><p>${escapeHtml(persisted.configuration.public_description)}</p><p>This completed week cannot be changed.</p>${publication ? `<p>${publication.activities.reduce((count, item) => count + item.sessions.length, 0)} published sessions.</p>` : ""}</section></section>`;
     }
     if (!this.#weekDraftBaseEvents.has(scope)) this.#weekDraftBaseEvents.set(scope, persisted?.event.id ?? null);
@@ -2235,7 +2235,9 @@ export class DemoDayApp {
     const identity = loadIdentity();
     const manifest = parseCohortManifest(COHORT_MANIFEST);
     if (!identity || !manifest) throw new Error("Signing identity is unavailable");
-    const slot = deriveProvisionedWeeks(manifest).find((item) => item.participant_allowlist.includes(identity.public_key_hex));
+    const participantSlots = deriveProvisionedWeeks(manifest).filter((item) => item.participant_allowlist.includes(identity.public_key_hex));
+    const today = new Date().toISOString().slice(0, 10);
+    const slot = participantSlots.find((item) => item.start_date <= today && today <= item.end_date) ?? participantSlots[0];
     if (!slot) throw new Error("This identity is not whitelisted");
     const latest = await this.#repository.refreshWeek(slot);
     if (!latest || !latest.configuration.intake_open || latest.configuration.status !== "active") throw new Error("Proposal intake is closed");

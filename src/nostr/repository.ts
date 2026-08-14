@@ -269,6 +269,8 @@ export class NostrRepository {
     const candidates = this.#index.allEvents()
       .map((event) => parseWeekConfigurationEvent(event, slot))
       .filter((parsed): parsed is ParsedWeekConfiguration => parsed !== null);
+    const archive = this.weekArchive(slot);
+    if (archive) return candidates.find((candidate) => candidate.event.id === archive.archive.configuration_event_id) ?? null;
     return candidates.reduce<ParsedWeekConfiguration | null>((latest, candidate) =>
       !latest || compareReplaceable(candidate.event, latest.event) ? candidate : latest,
     null);
@@ -341,13 +343,17 @@ export class NostrRepository {
   weekArchive(slot: ProvisionedWeek): { event: NostrEvent; archive: WeekArchive } | null {
     const candidates = this.#index.allEvents().map((event) => {
       const archive = parseWeekArchiveEvent(event, slot);
-      return archive ? { event, archive } : null;
+      const configurationEvent = archive ? this.getEventById(archive.configuration_event_id) : null;
+      const configuration = configurationEvent ? parseWeekConfigurationEvent(configurationEvent, slot) : null;
+      return archive && configuration?.configuration.status === "completed" ? { event, archive } : null;
     }).filter((item): item is { event: NostrEvent; archive: WeekArchive } => item !== null);
     return candidates.reduce<(typeof candidates)[number] | null>((earliest, item) => !earliest || item.event.created_at < earliest.event.created_at || item.event.created_at === earliest.event.created_at && item.event.id < earliest.event.id ? item : earliest, null);
   }
 
   async refreshWeekArchive(slot: ProvisionedWeek): Promise<{ event: NostrEvent; archive: WeekArchive } | null> {
     await this.queryRaw(DEFAULT_RELAYS, { kinds: [WEEK_ARCHIVE_KIND], authors: [slot.captain_pubkey], "#d": [`captains-cabin:archive:${slot.cohort_id}:${slot.week_number}`], limit: 20 });
+    const configurationIds = this.#index.allEvents().map((event) => parseWeekArchiveEvent(event, slot)?.configuration_event_id).filter((id): id is string => Boolean(id));
+    await this.fetchEventsByIds(configurationIds);
     return this.weekArchive(slot);
   }
 

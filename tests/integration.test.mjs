@@ -182,18 +182,24 @@ test("private proposal, draft schedule, explicit publication, and archive round-
   assert.deepEqual((await publicRepository.refreshPublicSchedule(slot))?.schedule, projection);
   assert.doesNotMatch(publication.content, /proposal-round-trip|private title|secret summary|decisions|answers/);
 
+  const completedConfiguration = { ...configuration, status: "completed", intake_open: false, base_event_id: configurationEvent.id };
+  const completionEvent = await buildWeekConfigurationEvent({ slot, configuration: completedConfiguration, secretKeyHex: captainSecret, createdAt: 106 });
+  await captainRepository.publish(completionEvent);
   const archive = {
     v: 1, type: "captains-cabin-week-archive", archive_id: "archive-round-trip", cohort_id: slot.cohort_id,
-    week_number: slot.week_number, configuration_event_id: configurationEvent.id, public_schedule_event_id: publication.id,
-    completed_at_ms: 106_000, configuration: configurationForArchive(configuration), public_schedule: projection,
+    week_number: slot.week_number, configuration_event_id: completionEvent.id, public_schedule_event_id: publication.id,
+    completed_at_ms: 107_000, configuration: configurationForArchive(completedConfiguration), public_schedule: projection,
   };
-  const archiveEvent = await buildWeekArchiveEvent({ archive, slot, secretKeyHex: captainSecret, createdAt: 106 });
+  const archiveEvent = await buildWeekArchiveEvent({ archive, slot, secretKeyHex: captainSecret, createdAt: 107 });
   await captainRepository.publish(archiveEvent);
   assert.deepEqual((await publicRepository.refreshWeekArchive(slot))?.archive, archive);
   assert.doesNotMatch(archiveEvent.content, /private title|secret summary|proposal-round-trip|decisions|answers/);
-  const rewrite = await buildWeekArchiveEvent({ archive: { ...archive, archive_id: "archive-rewrite", completed_at_ms: 107_000, configuration: { ...archive.configuration, theme: "Rewritten history" } }, slot, secretKeyHex: captainSecret, createdAt: 107 });
+  const rewrite = await buildWeekArchiveEvent({ archive: { ...archive, archive_id: "archive-rewrite", completed_at_ms: 108_000, configuration: { ...archive.configuration, theme: "Rewritten history" } }, slot, secretKeyHex: captainSecret, createdAt: 108 });
   await captainRepository.publish(rewrite);
   assert.equal((await publicRepository.refreshWeekArchive(slot))?.event.id, archiveEvent.id, "the first valid archive is immutable even if the captain later signs another event");
+  const postArchiveConfiguration = await buildWeekConfigurationEvent({ slot, configuration: { ...configuration, theme: "Post-archive rewrite", base_event_id: completionEvent.id }, secretKeyHex: captainSecret, createdAt: 109 });
+  await captainRepository.publish(postArchiveConfiguration);
+  assert.equal((await publicRepository.refreshWeek(slot))?.event.id, archive.configuration_event_id, "an archive pins the completed configuration against later rewrites");
 });
 
 test("a session preserves its published 1+2 timing snapshot through the periodic timer path", async () => {
