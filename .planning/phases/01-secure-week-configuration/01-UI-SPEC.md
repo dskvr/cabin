@@ -1,7 +1,7 @@
 ---
 phase: 1
 slug: secure-week-configuration
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-08-14
@@ -39,6 +39,8 @@ Render a single captain-only **Week setup** workspace for the authenticated iden
 4. **Proposal form** panel: ordered field-card stack.
 5. **Demo Day timing** panel.
 6. **Readiness** panel followed by preview and publish actions.
+
+The `Week {n}` display heading and the final readiness/publish area are the two visual anchors. The readiness state receives stronger structural emphasis than individual editor panels so the captain can immediately see what blocks publication.
 
 Do not render a freely-create-week control. If the active Nostr identity is not assigned to a provisioned week, render a non-editable access panel: `This identity is not assigned a week to configure.` Do not expose editor or publish controls. This is an interface cue only; authorization must remain enforced outside the interface.
 
@@ -184,11 +186,11 @@ Applicable state considerations resolved: 12 covered, 0 backstop, 0 unresolved.
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
+- [x] Dimension 1 Copywriting: PASS
+- [x] Dimension 2 Visuals: PASS
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS
+- [x] Dimension 5 Spacing: PASS
+- [x] Dimension 6 Registry Safety: PASS
 
-**Approval:** pending
+**Approval:** approved 2026-08-14
