@@ -39,6 +39,17 @@ test("motion integration keeps background renders and accessibility preferences 
   assert.match(app, /profileSearchAnnouncement !== this\.#announcedProfileSearch/);
 });
 
+test("actions acknowledge clicks and long operations paint a loading state before starting", () => {
+  assert.match(app, /this\.#acknowledgeInteraction\(actionElement\)/);
+  assert.match(app, /event\.submitter instanceof HTMLElement/);
+  assert.match(app, /this\.render\(\);\s+await this\.#afterBusyPaint\(\);/);
+  assert.match(app, /class="busy-overlay" role="status" aria-live="polite"/);
+  assert.match(app, /aria-busy="true"/);
+  assert.match(css, /\[data-action\]\.is-activating:not\(:disabled\)/);
+  assert.match(css, /\.busy-progress i\s*\{[\s\S]*animation: busy-progress/);
+  assert.match(css, /prefers-reduced-motion[\s\S]*\.busy-progress i/);
+});
+
 test("light theme is selectable, persistent, and limited to color overrides", () => {
   assert.match(css, /:root\[data-theme="light"\]\s*\{/);
   assert.match(css, /\.theme-switcher\s*\{/);

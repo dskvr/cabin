@@ -355,7 +355,6 @@ export class DemoDayApp {
   #motionRouteKey = "";
   #motionModalKey = "";
   #announcedNotice = "";
-  #announcedBusy = "";
   #announcedProfileSearch = "";
   #theme: ColorTheme = storedTheme();
   #nip07Pubkey: string | null = rememberedNip07PublicKey();
@@ -473,11 +472,9 @@ export class DemoDayApp {
     this.#motionModalKey = motionModalKey;
     const announceNotice = Boolean(this.#notice) && this.#notice?.text !== this.#announcedNotice;
     const alertRole = announceNotice ? 'role="alert"' : "";
-    const announceBusy = Boolean(this.#busy) && this.#busy !== this.#announcedBusy;
     this.#announcedNotice = this.#notice?.text ?? "";
-    this.#announcedBusy = this.#busy ?? "";
     this.#root.innerHTML = `
-      <div class="app-shell ${this.#route.name === "display" ? "display-shell" : ""}">
+      <div class="app-shell ${this.#route.name === "display" ? "display-shell" : ""}" ${this.#busy ? 'aria-busy="true"' : ""}>
         <canvas class="relay-field" aria-hidden="true"></canvas>
         ${this.#route.name === "display" ? "" : `
           <header class="topbar">
@@ -496,7 +493,7 @@ export class DemoDayApp {
         ${this.#notice ? `<div class="notice notice-${escapeAttr(this.#notice.kind)}" ${this.#notice.kind === "error" ? alertRole : announceNotice ? 'role="status" aria-live="polite"' : ""}>${escapeHtml(this.#notice.text)}<button data-action="dismiss-notice" aria-label="Dismiss">×</button></div>` : ""}
         <main class="${this.#route.name === "display" ? "display-main" : "page"}">${page}</main>
         ${this.#route.name === "display" ? "" : `<footer><nav>${this.#route.name === "session" ? `<a href="#/display/${escapeAttr(this.#route.naddr)}" data-fullscreen-display>Front of room display</a>` : ""}<a href="#/week-setup">Week setup</a><a href="#/create">I AM THE CAPTAIN NOW</a><a href="#/">Cohort week</a><a href="#/advanced">Advanced</a></nav></footer>`}
-        ${this.#busy ? `<div class="busy-overlay" ${announceBusy ? 'role="status"' : ""}><span class="spinner"></span><strong>${escapeHtml(this.#busy)}</strong></div>` : ""}
+        ${this.#busy ? `<div class="busy-overlay" role="status" aria-live="polite" aria-label="${escapeAttr(this.#busy)}"><div class="busy-card"><span class="spinner large" aria-hidden="true"></span><strong>${escapeHtml(this.#busy)}…</strong><span class="busy-progress" aria-hidden="true"><i></i></span></div></div>` : ""}
         ${this.#renderZapModal()}
       </div>
     `;
@@ -1622,7 +1619,10 @@ export class DemoDayApp {
   async #withBusy(label: string, operation: () => Promise<void>): Promise<void> {
     if (this.#busy) return;
     this.#busy = label;
-    this.requestRender();
+    // Render immediately and let the browser paint before an extension prompt,
+    // relay request, encryption, or other asynchronous work takes over.
+    this.render();
+    await this.#afterBusyPaint();
     try {
       await operation();
     } catch (error) {
@@ -1631,6 +1631,23 @@ export class DemoDayApp {
       this.#busy = null;
       this.requestRender();
     }
+  }
+
+  #afterBusyPaint(): Promise<void> {
+    const view = this.#root.ownerDocument.defaultView;
+    if (!view?.requestAnimationFrame) return Promise.resolve();
+    return new Promise((resolve) => {
+      view.requestAnimationFrame(() => view.setTimeout(resolve, 0));
+    });
+  }
+
+  #acknowledgeInteraction(element: HTMLElement): void {
+    if (element.matches(":disabled")) return;
+    element.classList.remove("is-activating");
+    // Force a restart when the same control is clicked twice in quick succession.
+    void element.offsetWidth;
+    element.classList.add("is-activating");
+    globalThis.setTimeout(() => element.classList.remove("is-activating"), 420);
   }
 
   async #lookupProfile(realNpub: string, relay?: string): Promise<void> {
@@ -2252,6 +2269,7 @@ export class DemoDayApp {
     const action = form.dataset.formAction;
     if (!action) return;
     event.preventDefault();
+    if (event.submitter instanceof HTMLElement) this.#acknowledgeInteraction(event.submitter);
     const active = this.#root.ownerDocument.activeElement;
     if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) active.blur();
     const data = new FormData(form);
@@ -2589,6 +2607,7 @@ export class DemoDayApp {
     if (!actionElement) return;
     const action = actionElement.dataset.action;
     if (!action) return;
+    this.#acknowledgeInteraction(actionElement);
     if (actionElement.tagName === "A") return;
     event.preventDefault();
 
