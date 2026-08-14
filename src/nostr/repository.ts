@@ -301,7 +301,7 @@ export class NostrRepository {
       this.queryRaw(DEFAULT_RELAYS, { kinds: [APP_KIND], authors: [slot.captain_pubkey], "#d": [weekD(slot)], limit: 100 }),
     ]);
     const revisions = this.#index.allEvents().map((event) => parseWeekConfigurationEvent(event, slot)).filter((item): item is ParsedWeekConfiguration => item !== null);
-    if (!revisions.some((item) => item.event.id === configurationEventId)) revisions.push({ event: { ...(this.getEventById(configurationEventId) ?? { id: configurationEventId, pubkey: slot.captain_pubkey, created_at: 0, kind: APP_KIND, tags: [], content: "", sig: "" }) }, configuration, d: weekD(slot), address: "" });
+    if (!revisions.some((item) => item.event.id === configurationEventId)) return [];
     const gifts = this.#index.allEvents().filter((event) => event.kind === GIFT_WRAP_KIND);
     const parsed = (await Promise.all(gifts.flatMap((event) => revisions.map(async (revision) => {
       const item = await parsePrivateProposalGift({ event, recipientSecretKeyHex, slot, configuration: revision.configuration, configurationEventId: revision.event.id });
