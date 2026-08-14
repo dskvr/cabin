@@ -26,7 +26,7 @@ import {
 import { calculateElo, rankElo } from "../domain/elo.js";
 import { buildExport, downloadJson, exportFilename } from "../domain/export.js";
 import { calculateFollowSuggestions } from "../domain/follows.js";
-import { formatClockSeconds, formatTimer, splitPresentationTime } from "../domain/timer.js";
+import { formatClockSeconds, formatTimer, sessionTimerDurations, splitPresentationTime } from "../domain/timer.js";
 import type {
   DemoDaySessionV1,
   LocalIdentityV1,
@@ -661,7 +661,7 @@ export class DemoDayApp {
       <a class="display-exit" href="#/" data-exit-fullscreen>Exit</a>
       <span class="display-kicker">Presented by ${escapeHtml(profile.name)}</span>
       <h1>${escapeHtml(current.content.demo.name)}</h1>
-      ${ready ? `<p class="display-description">${escapeHtml(current.content.demo.description)}</p><div class="display-phase ready-label">READY</div>` : this.#renderTimer(session.state.timer_started_at_ms, true)}
+      ${ready ? `<p class="display-description">${escapeHtml(current.content.demo.description)}</p><div class="display-phase ready-label">READY</div>` : this.#renderTimer(session.state.timer_started_at_ms, true, session.state)}
     </div>`;
   }
 
@@ -721,7 +721,7 @@ export class DemoDayApp {
     return `<section class="current-demo ${ready ? "ready" : "live"}">
       <div class="current-demo-top"><span class="live-pill">${ready ? "READY" : "LIVE"}</span><span>Presented by ${escapeHtml(profile.name)}</span></div>
       <h2>${escapeHtml(current.content.demo.name)}</h2>
-      ${ready ? `<p class="project-description">${escapeHtml(current.content.demo.description)}</p>` : this.#renderTimer(session.state.timer_started_at_ms, false)}
+      ${ready ? `<p class="project-description">${escapeHtml(current.content.demo.description)}</p>` : this.#renderTimer(session.state.timer_started_at_ms, false, session.state)}
       <div class="current-actions">
         ${current.content.demo.link ? `<a class="button button-secondary" href="${escapeAttr(current.content.demo.link)}" target="_blank" rel="noreferrer">Open project</a>` : ""}
         ${hasZap ? button(`⚡ Zap ${escapeHtml(profile.name)}`, "open-zap", { className: "button button-zap", attrs: `data-entry-author="${escapeAttr(current.author)}"` }) : `<span class="zap-unavailable">Zap unavailable · no Lightning address</span>`}
@@ -761,10 +761,11 @@ export class DemoDayApp {
     </form>`;
   }
 
-  #renderTimer(startedAtMs: number | null, display: boolean): string {
+  #renderTimer(startedAtMs: number | null, display: boolean, session: DemoDaySessionV1): string {
     if (startedAtMs == null) return "";
-    const timer = formatTimer(Date.now() - startedAtMs);
-    return `<div class="timer ${display ? "display-timer" : ""} timer-${timer.className}" data-timer-start="${startedAtMs}">
+    const durations = sessionTimerDurations(session);
+    const timer = formatTimer(Date.now() - startedAtMs, durations);
+    return `<div class="timer ${display ? "display-timer" : ""} timer-${timer.className}" data-timer-start="${startedAtMs}" data-timer-presentation-ms="${durations.presentationMs}" data-timer-question-ms="${durations.questionMs}">
       <span data-timer-phase>${timer.phase}</span>
       <strong data-timer-value>${timer.value}</strong>
     </div>`;
@@ -926,7 +927,7 @@ export class DemoDayApp {
     const finalElo = session.state.final_elo ?? rankElo(calculateElo(session.state.presented.map((run) => run.pubkey), entries).rows);
     const totalSats = snapshot.receipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
     const totalTiming = session.state.presented.reduce((acc, run) => {
-      const timing = splitPresentationTime(run.finished_at_ms - run.started_at_ms);
+      const timing = splitPresentationTime(run.finished_at_ms - run.started_at_ms, sessionTimerDurations(session.state));
       acc.presentation += timing.presentation_ms;
       acc.questions += timing.questions_ms;
       acc.overtime += timing.overtime_ms;
@@ -942,7 +943,7 @@ export class DemoDayApp {
         <div class="table-scroll"><table><thead><tr><th>Rank</th><th>Project</th><th>Presenter</th><th>Final Elo</th><th>Votes</th><th>Zaps</th><th>Sats</th><th>Elapsed</th><th>Overtime</th></tr></thead><tbody>${finalElo.map((row) => {
           const entry = entryMap.get(row.pubkey);
           const run = session.state.presented.find((item) => item.pubkey === row.pubkey);
-          const timing = run ? splitPresentationTime(run.finished_at_ms - run.started_at_ms) : null;
+          const timing = run ? splitPresentationTime(run.finished_at_ms - run.started_at_ms, sessionTimerDurations(session.state)) : null;
           const demoReceipts = snapshot.receipts.filter((receipt) => receipt.targetEntryAddress === entry?.address);
           const sats = demoReceipts.reduce((sum, receipt) => sum + (receipt.amountSats ?? 0), 0);
           const pairVotes = calculateElo(session.state.presented.map((item) => item.pubkey), entries).rows.find((item) => item.pubkey === row.pubkey)?.pairwiseVotes ?? 0;
@@ -1436,6 +1437,11 @@ export class DemoDayApp {
   async #createSession(formData: FormData): Promise<void> {
     const identity = loadIdentity();
     if (!identity || !this.#identityReady(identity)) throw new Error("Complete profile import first");
+    const manifest = parseCohortManifest(COHORT_MANIFEST);
+    const slot = manifest ? weekForCaptain(manifest, identity.public_key_hex) : null;
+    if (!slot) throw new Error("This identity is not assigned a week to configure.");
+    const week = await this.#repository.refreshWeek(slot);
+    if (!week) throw new Error("Publish this week's configuration before creating a demo day.");
     const name = clampText(String(formData.get("session_name") ?? ""), 140);
     if (!name) throw new Error("Demo-day name is required");
     const demo = this.#formDemo(formData);
@@ -1449,6 +1455,8 @@ export class DemoDayApp {
       closed_at_ms: null,
       current_demo_pubkey: null,
       timer_started_at_ms: null,
+      presentation_minutes: week.configuration.presentation_minutes,
+      question_minutes: week.configuration.question_minutes,
       presented: [],
       final_elo: null,
       snapshot_entry_ids: null,
@@ -2397,7 +2405,10 @@ export class DemoDayApp {
     for (const element of this.#root.querySelectorAll<HTMLElement>("[data-timer-start]")) {
       const startedAt = Number(element.dataset.timerStart);
       if (!Number.isFinite(startedAt)) continue;
-      const timer = formatTimer(Date.now() - startedAt);
+      const presentationMs = Number(element.dataset.timerPresentationMs);
+      const questionMs = Number(element.dataset.timerQuestionMs);
+      if (!Number.isSafeInteger(presentationMs) || presentationMs <= 0 || !Number.isSafeInteger(questionMs) || questionMs <= 0) continue;
+      const timer = formatTimer(Date.now() - startedAt, { presentationMs, questionMs });
       const phase = element.querySelector<HTMLElement>("[data-timer-phase]");
       const value = element.querySelector<HTMLElement>("[data-timer-value]");
       if (phase) phase.textContent = timer.phase;

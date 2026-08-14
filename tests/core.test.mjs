@@ -34,6 +34,7 @@ import {
 import {
   calculateTimer,
   formatTimer,
+  sessionTimerDurations,
   splitPresentationTime,
 } from "../dist/assets/domain/timer.js";
 import {
@@ -313,6 +314,9 @@ test("timer implements presentation, questions, and overtime boundaries", () => 
     overtime_ms: 18_333,
     total_ms: 498_333,
   });
+  const configured = sessionTimerDurations({ presentation_minutes: 1, question_minutes: 2 });
+  assert.deepEqual(formatTimer(60_000, configured), { phase: "QUESTIONS", value: "02:00", className: "questions" });
+  assert.deepEqual(formatTimer(180_000, configured), { phase: "OVERTIME", value: "+00:00", className: "overtime" });
 });
 
 test("Elo uses deterministic presentation-pair order, ignores missing ranks, and excludes presenters", () => {

@@ -49,6 +49,9 @@ export interface DemoDaySessionV1 {
   closed_at_ms: number | null;
   current_demo_pubkey: string | null;
   timer_started_at_ms: number | null;
+  /** Immutable timer settings copied from the captain's published week configuration. */
+  presentation_minutes?: number;
+  question_minutes?: number;
   presented: PresentedDemo[];
   final_elo: EloResult[] | null;
   snapshot_entry_ids: string[] | null;

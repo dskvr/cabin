@@ -10,7 +10,8 @@ import { npubEncode } from "../dist/assets/nostr/bech32.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
 import { buildExport } from "../dist/assets/domain/export.js";
 import { buildEntryEvent, buildSessionEvent, buildWeekConfigurationEvent, copyProfileToEphemeralKey } from "../dist/assets/nostr/event-builders.js";
-import { parseParticipantEntryEvent } from "../dist/assets/nostr/event-parsers.js";
+import { parseParticipantEntryEvent, parseSessionEvent } from "../dist/assets/nostr/event-parsers.js";
+import { formatTimer, sessionTimerDurations } from "../dist/assets/domain/timer.js";
 import { finalizeEvent, getPublicKey } from "../dist/assets/nostr/crypto.js";
 import { NostrRepository } from "../dist/assets/nostr/repository.js";
 import { InMemoryTestTransport } from "../dist/assets/nostr/transport.js";
@@ -115,6 +116,21 @@ test("manifest-assigned captain publishes and reads a complete week configuratio
   assert.equal(loaded.configuration.public_description, "A signed, intake-closed week.");
   assert.equal(loaded.configuration.intake_open, false);
   assert.equal(repository.getWeek({ ...slot, captain_pubkey: getPublicKey(key(73)) }), null, "wrong-author coordinates cannot read the state");
+});
+
+test("a session preserves its published 1+2 timing snapshot through the periodic timer path", async () => {
+  const captainSecret = key(76);
+  const event = await buildSessionEvent({
+    sessionD,
+    state: makeState({ presentation_minutes: 1, question_minutes: 2 }),
+    secretKeyHex: captainSecret,
+    createdAt: 10,
+  });
+  const session = parseSessionEvent(event);
+  assert.ok(session);
+  const durations = sessionTimerDurations(session.state);
+  assert.deepEqual(formatTimer(60_000, durations), { phase: "QUESTIONS", value: "02:00", className: "questions" });
+  assert.deepEqual(formatTimer(180_000, durations), { phase: "OVERTIME", value: "+00:00", className: "overtime" });
 });
 
 test("week configuration rejects invalid boundaries and detects a stale revision base", async () => {

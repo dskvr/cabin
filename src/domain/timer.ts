@@ -16,6 +16,25 @@ export interface TimerDurations {
   questionMs?: number;
 }
 
+/** Resolve a persisted session timing snapshot, retaining defaults for legacy sessions. */
+export function sessionTimerDurations(input: {
+  presentation_minutes?: number;
+  question_minutes?: number;
+}): Required<TimerDurations> {
+  const presentationMinutes = input.presentation_minutes;
+  const questionMinutes = input.question_minutes;
+  if (
+    typeof presentationMinutes === "number" && Number.isSafeInteger(presentationMinutes) && presentationMinutes > 0 &&
+    typeof questionMinutes === "number" && Number.isSafeInteger(questionMinutes) && questionMinutes > 0
+  ) {
+    return {
+      presentationMs: presentationMinutes * 60_000,
+      questionMs: questionMinutes * 60_000,
+    };
+  }
+  return durations();
+}
+
 function durations(input: TimerDurations = {}): Required<TimerDurations> {
   return {
     presentationMs: input.presentationMs ?? PRESENTATION_MS,

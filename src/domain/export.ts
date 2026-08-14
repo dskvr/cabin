@@ -9,7 +9,7 @@ import type {
   ZapReceipt,
 } from "./types.js";
 import { calculateElo, rankElo } from "./elo.js";
-import { splitPresentationTime } from "./timer.js";
+import { sessionTimerDurations, splitPresentationTime } from "./timer.js";
 import { round6 } from "./utils.js";
 
 function uniqueEvents(events: NostrEvent[]): NostrEvent[] {
@@ -73,6 +73,7 @@ export function buildExport({
   const captainMetadata = parseProfileMetadata(captainProfile);
   const captainRealPubkey = captainEntry?.content.real_pubkey ?? null;
   const captainNpub = npubEncode(session.event.pubkey);
+  const timerDurations = sessionTimerDurations(session.state);
 
   const participants = entries.map((entry) => {
     const profile = profiles.get(entry.author) ?? null;
@@ -97,7 +98,7 @@ export function buildExport({
   const demos = entries.map((entry) => {
     const runIndex = session.state.presented.findIndex((run) => run.pubkey === entry.author);
     const run = runIndex >= 0 ? session.state.presented[runIndex] ?? null : null;
-    const timing = run ? splitPresentationTime(run.finished_at_ms - run.started_at_ms) : null;
+    const timing = run ? splitPresentationTime(run.finished_at_ms - run.started_at_ms, timerDurations) : null;
     const presenterProfile = profiles.get(entry.author) ?? null;
     const presenterMetadata = parseProfileMetadata(presenterProfile);
     const feedback = entries.flatMap((reviewer) => {
@@ -166,7 +167,7 @@ export function buildExport({
   }));
 
   const totalPresentation = session.state.presented.reduce((totals, run) => {
-    const timing = splitPresentationTime(run.finished_at_ms - run.started_at_ms);
+    const timing = splitPresentationTime(run.finished_at_ms - run.started_at_ms, timerDurations);
     totals.presentation_ms += timing.presentation_ms;
     totals.questions_ms += timing.questions_ms;
     totals.overtime_ms += timing.overtime_ms;

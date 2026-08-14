@@ -66,6 +66,11 @@ function parseSessionContent(content: string): DemoDaySessionV1 | null {
   if (!isSafeMs(value.created_at_ms) || !isSafeMs(value.closed_at_ms, true)) return null;
   if (!(value.current_demo_pubkey === null || isValidHexPubkey(value.current_demo_pubkey))) return null;
   if (!isSafeMs(value.timer_started_at_ms, true)) return null;
+  const hasTimingSnapshot = "presentation_minutes" in value || "question_minutes" in value;
+  if (hasTimingSnapshot && (
+    typeof value.presentation_minutes !== "number" || !Number.isInteger(value.presentation_minutes) || value.presentation_minutes < 1 || value.presentation_minutes > 180 ||
+    typeof value.question_minutes !== "number" || !Number.isInteger(value.question_minutes) || value.question_minutes < 1 || value.question_minutes > 180
+  )) return null;
   if (!Array.isArray(value.presented) || !value.presented.every((item) => {
     if (!isRecord(item) || !isValidHexPubkey(item.pubkey)) return false;
     if (typeof item.started_at_ms !== "number" || !Number.isSafeInteger(item.started_at_ms) || item.started_at_ms < 0) return false;
