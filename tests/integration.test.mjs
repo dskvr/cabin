@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import { APP_KIND } from "../dist/assets/config/relays.js";
-import { parseCohortManifest, deriveProvisionedWeeks, weekD } from "../dist/assets/domain/cohort.js";
+import { COHORT_MANIFEST } from "../dist/assets/config/cohort.js";
+import { parseCohortManifest, deriveProvisionedWeeks, weekD, weekForCaptain } from "../dist/assets/domain/cohort.js";
 import { parseWeekConfiguration, removeActivity, removeProposalField, seedWeekConfiguration } from "../dist/assets/domain/week.js";
 import { npubEncode } from "../dist/assets/nostr/bech32.js";
 import { calculateElo, rankElo } from "../dist/assets/domain/elo.js";
@@ -77,6 +78,14 @@ function makeEntry({ realPubkey, sourceId, name, ranking = [], feedback = {}, up
     updated_at_ms: updatedAt,
   };
 }
+
+test("shipped cohort manifest parses and resolves its assigned captain", () => {
+  const manifest = parseCohortManifest(COHORT_MANIFEST);
+  assert.ok(manifest, "the deployed cohort manifest must be valid");
+  const captain = manifest.captains[0];
+  assert.ok(captain, "the deployed cohort manifest must assign a captain");
+  assert.equal(weekForCaptain(manifest, captain.pubkey)?.week_number, captain.week_number);
+});
 
 test("manifest-assigned captain publishes and reads a complete week configuration", async () => {
   const captainSecret = key(71);
