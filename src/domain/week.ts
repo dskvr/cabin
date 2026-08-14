@@ -29,8 +29,8 @@ export interface WeekConfigurationV1 {
   cohort_id: string;
   week_number: number;
   timezone: "Atlantic/Madeira";
-  status: "setup";
-  intake_open: false;
+  status: "setup" | "active" | "completed";
+  intake_open: boolean;
   theme: string;
   public_description: string;
   activities: WeekActivityV1[];
@@ -93,7 +93,7 @@ export function seedWeekConfiguration(slot: ProvisionedWeek, edits: Pick<WeekCon
 
 export function parseWeekConfiguration(value: unknown): WeekConfigurationV1 | null {
   if (!isRecord(value) || Object.keys(value).some((key) => !CONFIGURATION_KEYS.has(key)) || value.v !== 1 || value.type !== "week-configuration" || !identifier(value.cohort_id) || typeof value.week_number !== "number" || !Number.isInteger(value.week_number) || value.week_number < 1) return null;
-  if (value.timezone !== "Atlantic/Madeira" || value.status !== "setup" || value.intake_open !== false || !text(value.theme, 1, 120) || !text(value.public_description, 1, 4000)) return null;
+  if (value.timezone !== "Atlantic/Madeira" || !["setup", "active", "completed"].includes(String(value.status)) || typeof value.intake_open !== "boolean" || value.status === "completed" && value.intake_open || !text(value.theme, 1, 120) || !text(value.public_description, 1, 4000)) return null;
   if (!Array.isArray(value.activities) || value.activities.length === 0 || value.activities.length > MAX_ACTIVITIES || !value.activities.every(activity)) return null;
   if (!Array.isArray(value.proposal_fields) || value.proposal_fields.length === 0 || value.proposal_fields.length > MAX_PROPOSAL_FIELDS || !value.proposal_fields.every(proposalField)) return null;
   if (new Set(value.activities.map((item) => item.id)).size !== value.activities.length || new Set(value.proposal_fields.map((item) => item.id)).size !== value.proposal_fields.length) return null;

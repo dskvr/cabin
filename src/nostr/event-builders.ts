@@ -1,4 +1,6 @@
-import { APP_KIND, DEFAULT_RELAYS, PROFILE_KIND, ZAP_REQUEST_KIND } from "../config/relays.js";
+import { APP_KIND, DEFAULT_RELAYS, GIFT_WRAP_KIND, PRIVATE_PROPOSAL_KIND, PRIVATE_SCHEDULE_KIND, PROFILE_KIND, ZAP_REQUEST_KIND } from "../config/relays.js";
+import type { PrivateProposalV1, PrivateScheduleV1, PublicScheduleV1, WeekArchiveV1 } from "../domain/cabin.js";
+import { parsePrivateProposal, parsePrivateSchedule } from "../domain/cabin.js";
 import type {
   DemoDaySessionV1,
   NostrEvent,
@@ -12,7 +14,66 @@ import type { WeekConfigurationV1 } from "../domain/week.js";
 import { parseWeekConfiguration } from "../domain/week.js";
 import { cloneTags, entryD } from "../domain/utils.js";
 import { encodeLnurl } from "./bech32.js";
-import { finalizeEvent, getPublicKey } from "./crypto.js";
+import { finalizeEvent, generateSecretKeyHex, getPublicKey, nip44Encrypt } from "./crypto.js";
+
+async function giftWrap(inner: NostrEvent, recipientPubkey: string, createdAt: number): Promise<NostrEvent> {
+  const ephemeralSecret = generateSecretKeyHex();
+  return finalizeEvent({
+    kind: GIFT_WRAP_KIND,
+    created_at: createdAt,
+    tags: [["p", recipientPubkey]],
+    content: await nip44Encrypt(JSON.stringify(inner), ephemeralSecret, recipientPubkey),
+  }, ephemeralSecret);
+}
+
+export async function buildPrivateProposalEvents({
+  proposal, slot, configuration, configurationEventId, secretKeyHex, createdAt,
+}: {
+  proposal: PrivateProposalV1;
+  slot: ProvisionedWeek;
+  configuration: WeekConfigurationV1;
+  configurationEventId: string;
+  secretKeyHex: string;
+  createdAt: number;
+}): Promise<{ captain: NostrEvent; participant: NostrEvent; inner: NostrEvent }> {
+  const author = getPublicKey(secretKeyHex);
+  if (!parsePrivateProposal(proposal) || proposal.author_pubkey !== author) throw new Error("Invalid private proposal");
+  const { validateProposalForWeek } = await import("../domain/cabin.js");
+  const errors = validateProposalForWeek(proposal, author, slot, configuration, configurationEventId);
+  if (errors.length) throw new Error(errors[0]);
+  const inner = await finalizeEvent({
+    kind: PRIVATE_PROPOSAL_KIND, created_at: createdAt,
+    tags: [["t", "captains-cabin-private-proposal"]], content: JSON.stringify(proposal),
+  }, secretKeyHex);
+  return {
+    captain: await giftWrap(inner, slot.captain_pubkey, createdAt),
+    participant: await giftWrap(inner, author, createdAt),
+    inner,
+  };
+}
+
+export async function buildPrivateScheduleEvent({
+  schedule, slot, secretKeyHex, createdAt,
+}: { schedule: PrivateScheduleV1; slot: ProvisionedWeek; secretKeyHex: string; createdAt: number }): Promise<{ wrap: NostrEvent; inner: NostrEvent }> {
+  const captain = getPublicKey(secretKeyHex);
+  if (captain !== slot.captain_pubkey || !parsePrivateSchedule(schedule) || schedule.cohort_id !== slot.cohort_id || schedule.week_number !== slot.week_number) throw new Error("Only the assigned captain can save this schedule");
+  const inner = await finalizeEvent({ kind: PRIVATE_SCHEDULE_KIND, created_at: createdAt, tags: [["t", "captains-cabin-private-schedule"]], content: JSON.stringify(schedule) }, secretKeyHex);
+  return { wrap: await giftWrap(inner, captain, createdAt), inner };
+}
+
+export async function buildPublicScheduleEvent({
+  schedule, slot, secretKeyHex, createdAt,
+}: { schedule: PublicScheduleV1; slot: ProvisionedWeek; secretKeyHex: string; createdAt: number }): Promise<NostrEvent> {
+  if (getPublicKey(secretKeyHex) !== slot.captain_pubkey || schedule.cohort_id !== slot.cohort_id || schedule.week_number !== slot.week_number) throw new Error("Only the assigned captain can publish this schedule");
+  return finalizeEvent({ kind: APP_KIND, created_at: createdAt, tags: [["d", `captains-cabin:schedule:${slot.cohort_id}:${slot.week_number}`], ["t", "captains-cabin-public-schedule"]], content: JSON.stringify(schedule) }, secretKeyHex);
+}
+
+export async function buildWeekArchiveEvent({
+  archive, slot, secretKeyHex, createdAt,
+}: { archive: WeekArchiveV1; slot: ProvisionedWeek; secretKeyHex: string; createdAt: number }): Promise<NostrEvent> {
+  if (getPublicKey(secretKeyHex) !== slot.captain_pubkey || archive.cohort_id !== slot.cohort_id || archive.week_number !== slot.week_number) throw new Error("Only the assigned captain can archive this week");
+  return finalizeEvent({ kind: APP_KIND, created_at: createdAt, tags: [["d", `captains-cabin:archive:${slot.cohort_id}:${slot.week_number}`], ["t", "captains-cabin-week-archive"]], content: JSON.stringify(archive) }, secretKeyHex);
+}
 
 export async function buildSessionEvent({
   sessionD,

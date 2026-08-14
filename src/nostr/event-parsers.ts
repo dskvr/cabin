@@ -1,4 +1,6 @@
-import { APP_KIND } from "../config/relays.js";
+import { APP_KIND, GIFT_WRAP_KIND, PRIVATE_PROPOSAL_KIND, PRIVATE_SCHEDULE_KIND } from "../config/relays.js";
+import type { PrivateProposalV1, PrivateScheduleV1, PublicScheduleV1, WeekArchiveV1 } from "../domain/cabin.js";
+import { parsePrivateProposal, parsePrivateSchedule, validateProposalForWeek } from "../domain/cabin.js";
 import type {
   DemoDaySessionV1,
   NostrEvent,
@@ -18,6 +20,57 @@ import {
 import { isAssignedCaptain } from "../domain/authorization.js";
 import { weekAddress, weekD, type ProvisionedWeek } from "../domain/cohort.js";
 import { MAX_WEEK_CONFIGURATION_CONTENT_LENGTH, parseWeekConfiguration, type WeekConfigurationV1 } from "../domain/week.js";
+import { getPublicKey, nip44Decrypt, verifyEvent } from "./crypto.js";
+
+const MAX_PRIVATE_ENVELOPE_LENGTH = 65_536;
+
+function singleTag(event: NostrEvent, name: string): string | null {
+  const tags = event.tags.filter((tag) => tag.length === 2 && tag[0] === name);
+  return tags.length === 1 ? tags[0]?.[1] ?? null : null;
+}
+
+async function unwrapGift(event: NostrEvent, recipientSecretKeyHex: string): Promise<NostrEvent | null> {
+  if (event.kind !== GIFT_WRAP_KIND || event.content.length > MAX_PRIVATE_ENVELOPE_LENGTH || singleTag(event, "p") !== getPublicKey(recipientSecretKeyHex) || !(await verifyEvent(event))) return null;
+  try {
+    const plaintext = await nip44Decrypt(event.content, recipientSecretKeyHex, event.pubkey);
+    if (plaintext.length > MAX_PRIVATE_ENVELOPE_LENGTH) return null;
+    const inner = JSON.parse(plaintext) as unknown;
+    return typeof inner === "object" && inner !== null && await verifyEvent(inner as NostrEvent) ? inner as NostrEvent : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function parsePrivateProposalGift({
+  event, recipientSecretKeyHex, slot, configuration, configurationEventId,
+}: { event: NostrEvent; recipientSecretKeyHex: string; slot: ProvisionedWeek; configuration: WeekConfigurationV1; configurationEventId: string }): Promise<{ event: NostrEvent; inner: NostrEvent; proposal: PrivateProposalV1 } | null> {
+  const inner = await unwrapGift(event, recipientSecretKeyHex);
+  if (!inner || inner.kind !== PRIVATE_PROPOSAL_KIND || singleTag(inner, "t") !== "captains-cabin-private-proposal" || inner.content.length > MAX_WEEK_CONFIGURATION_CONTENT_LENGTH) return null;
+  const proposal = parsePrivateProposal(safeJson(inner.content));
+  if (!proposal || validateProposalForWeek(proposal, inner.pubkey, slot, configuration, configurationEventId).length) return null;
+  return { event, inner, proposal };
+}
+
+export async function parsePrivateScheduleGift(event: NostrEvent, recipientSecretKeyHex: string, slot: ProvisionedWeek): Promise<{ event: NostrEvent; inner: NostrEvent; schedule: PrivateScheduleV1 } | null> {
+  const inner = await unwrapGift(event, recipientSecretKeyHex);
+  if (!inner || inner.kind !== PRIVATE_SCHEDULE_KIND || inner.pubkey !== slot.captain_pubkey || singleTag(inner, "t") !== "captains-cabin-private-schedule" || inner.content.length > MAX_WEEK_CONFIGURATION_CONTENT_LENGTH) return null;
+  const schedule = parsePrivateSchedule(safeJson(inner.content));
+  return schedule && schedule.cohort_id === slot.cohort_id && schedule.week_number === slot.week_number ? { event, inner, schedule } : null;
+}
+
+export function parsePublicScheduleEvent(event: NostrEvent, slot: ProvisionedWeek): PublicScheduleV1 | null {
+  if (event.kind !== APP_KIND || event.pubkey !== slot.captain_pubkey || singleTag(event, "d") !== `captains-cabin:schedule:${slot.cohort_id}:${slot.week_number}` || singleTag(event, "t") !== "captains-cabin-public-schedule" || event.content.length > MAX_WEEK_CONFIGURATION_CONTENT_LENGTH) return null;
+  const value = safeJson(event.content);
+  if (!isRecord(value) || value.v !== 1 || value.type !== "captains-cabin-public-schedule" || value.cohort_id !== slot.cohort_id || value.week_number !== slot.week_number || value.timezone !== "Atlantic/Madeira" || !isValidEventId(value.source_configuration_event_id) || !isValidEventId(value.source_draft_event_id) || !isSafeMs(value.published_at_ms) || !Array.isArray(value.activities)) return null;
+  return value as unknown as PublicScheduleV1;
+}
+
+export function parseWeekArchiveEvent(event: NostrEvent, slot: ProvisionedWeek): WeekArchiveV1 | null {
+  if (event.kind !== APP_KIND || event.pubkey !== slot.captain_pubkey || singleTag(event, "d") !== `captains-cabin:archive:${slot.cohort_id}:${slot.week_number}` || singleTag(event, "t") !== "captains-cabin-week-archive" || event.content.length > MAX_WEEK_CONFIGURATION_CONTENT_LENGTH) return null;
+  const value = safeJson(event.content);
+  if (!isRecord(value) || value.v !== 1 || value.type !== "captains-cabin-week-archive" || value.cohort_id !== slot.cohort_id || value.week_number !== slot.week_number || !isValidEventId(value.configuration_event_id) || !(value.public_schedule_event_id === null || isValidEventId(value.public_schedule_event_id)) || !isSafeMs(value.completed_at_ms) || !isRecord(value.configuration)) return null;
+  return value as unknown as WeekArchiveV1;
+}
 
 export interface ParsedWeekConfiguration {
   event: NostrEvent;

@@ -20,6 +20,11 @@ interface AffinePoint {
 const INFINITY: JacobianPoint = { x: 0n, y: 1n, z: 0n };
 const GENERATOR: JacobianPoint = { x: GX, y: GY, z: 1n };
 const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { fatal: true });
+const NIP44_SALT = encoder.encode("nip44-v2");
+const NIP44_VERSION = 2;
+const NIP44_MAX_PLAINTEXT_BYTES = 32_768;
+const NIP44_MAX_PAYLOAD_CHARS = 65_536;
 const SHA256_INITIAL = new Uint32Array([
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
   0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -153,6 +158,177 @@ function concatBytes(...parts: Uint8Array[]): Uint8Array {
     offset += part.length;
   }
   return result;
+}
+
+function base64Encode(bytes: Uint8Array): string {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return globalThis.btoa(binary);
+}
+
+function base64Decode(value: string): Uint8Array {
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length % 4 !== 0) throw new Error("Invalid NIP-44 base64 payload");
+  const binary = globalThis.atob(value);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+async function hmacSha256(key: Uint8Array, message: Uint8Array): Promise<Uint8Array> {
+  const blockKey = key.length > 64 ? await sha256(key) : key;
+  const normalized = new Uint8Array(64);
+  normalized.set(blockKey);
+  const inner = Uint8Array.from(normalized, (value) => value ^ 0x36);
+  const outer = Uint8Array.from(normalized, (value) => value ^ 0x5c);
+  return sha256(concatBytes(outer, await sha256(concatBytes(inner, message))));
+}
+
+async function hkdfExtract(ikm: Uint8Array, salt: Uint8Array): Promise<Uint8Array> {
+  return hmacSha256(salt, ikm);
+}
+
+async function hkdfExpand(prk: Uint8Array, info: Uint8Array, length: number): Promise<Uint8Array> {
+  if (length < 1 || length > 255 * 32) throw new Error("Invalid HKDF output length");
+  const blocks: Uint8Array[] = [];
+  let previous = new Uint8Array();
+  for (let index = 1; blocks.length * 32 < length; index += 1) {
+    previous = await hmacSha256(prk, concatBytes(previous, info, Uint8Array.of(index)));
+    blocks.push(previous);
+  }
+  return concatBytes(...blocks).slice(0, length);
+}
+
+function rotateLeft(value: number, shift: number): number {
+  return (value << shift) | (value >>> (32 - shift));
+}
+
+function quarterRound(state: Uint32Array, a: number, b: number, c: number, d: number): void {
+  state[a] = ((state[a] ?? 0) + (state[b] ?? 0)) >>> 0; state[d] = rotateLeft((state[d] ?? 0) ^ (state[a] ?? 0), 16) >>> 0;
+  state[c] = ((state[c] ?? 0) + (state[d] ?? 0)) >>> 0; state[b] = rotateLeft((state[b] ?? 0) ^ (state[c] ?? 0), 12) >>> 0;
+  state[a] = ((state[a] ?? 0) + (state[b] ?? 0)) >>> 0; state[d] = rotateLeft((state[d] ?? 0) ^ (state[a] ?? 0), 8) >>> 0;
+  state[c] = ((state[c] ?? 0) + (state[d] ?? 0)) >>> 0; state[b] = rotateLeft((state[b] ?? 0) ^ (state[c] ?? 0), 7) >>> 0;
+}
+
+function chacha20(key: Uint8Array, nonce: Uint8Array, input: Uint8Array): Uint8Array {
+  if (key.length !== 32 || nonce.length !== 12) throw new Error("Invalid ChaCha20 key or nonce");
+  const keyView = new DataView(key.buffer, key.byteOffset, key.byteLength);
+  const nonceView = new DataView(nonce.buffer, nonce.byteOffset, nonce.byteLength);
+  const output = new Uint8Array(input.length);
+  for (let offset = 0, counter = 0; offset < input.length; offset += 64, counter += 1) {
+    if (counter > 0xffff_ffff) throw new Error("NIP-44 payload is too large");
+    const initial = new Uint32Array([
+      0x61707865, 0x3320646e, 0x79622d32, 0x6b206574,
+      ...Array.from({ length: 8 }, (_, index) => keyView.getUint32(index * 4, true)),
+      counter,
+      nonceView.getUint32(0, true), nonceView.getUint32(4, true), nonceView.getUint32(8, true),
+    ]);
+    const working = new Uint32Array(initial);
+    for (let round = 0; round < 10; round += 1) {
+      quarterRound(working, 0, 4, 8, 12); quarterRound(working, 1, 5, 9, 13); quarterRound(working, 2, 6, 10, 14); quarterRound(working, 3, 7, 11, 15);
+      quarterRound(working, 0, 5, 10, 15); quarterRound(working, 1, 6, 11, 12); quarterRound(working, 2, 7, 8, 13); quarterRound(working, 3, 4, 9, 14);
+    }
+    const stream = new Uint8Array(64);
+    const streamView = new DataView(stream.buffer);
+    for (let index = 0; index < 16; index += 1) streamView.setUint32(index * 4, ((working[index] ?? 0) + (initial[index] ?? 0)) >>> 0, true);
+    const size = Math.min(64, input.length - offset);
+    for (let index = 0; index < size; index += 1) output[offset + index] = (input[offset + index] ?? 0) ^ (stream[index] ?? 0);
+  }
+  return output;
+}
+
+export function nip44PaddedLength(length: number): number {
+  if (!Number.isSafeInteger(length) || length < 1) throw new Error("Invalid NIP-44 plaintext length");
+  if (length <= 32) return 32;
+  const nextPower = 2 ** (Math.floor(Math.log2(length - 1)) + 1);
+  const chunk = nextPower <= 256 ? 32 : nextPower / 8;
+  return chunk * (Math.floor((length - 1) / chunk) + 1);
+}
+
+function nip44Pad(plaintext: string): Uint8Array {
+  const unpadded = encoder.encode(plaintext);
+  if (unpadded.length < 1 || unpadded.length > NIP44_MAX_PLAINTEXT_BYTES) throw new Error("Invalid NIP-44 plaintext length");
+  const prefixLength = unpadded.length < 65_536 ? 2 : 6;
+  const result = new Uint8Array(prefixLength + nip44PaddedLength(unpadded.length));
+  const view = new DataView(result.buffer);
+  if (prefixLength === 2) view.setUint16(0, unpadded.length); else view.setUint32(2, unpadded.length);
+  result.set(unpadded, prefixLength);
+  return result;
+}
+
+function nip44Unpad(padded: Uint8Array): string {
+  if (padded.length < 34) throw new Error("Invalid NIP-44 padding");
+  const view = new DataView(padded.buffer, padded.byteOffset, padded.byteLength);
+  const compactLength = view.getUint16(0);
+  const prefixLength = compactLength === 0 ? 6 : 2;
+  const length = compactLength === 0 ? view.getUint32(2) : compactLength;
+  if (length < 1 || length > NIP44_MAX_PLAINTEXT_BYTES || (prefixLength === 6 && length < 65_536)) throw new Error("Invalid NIP-44 padding");
+  if (padded.length !== prefixLength + nip44PaddedLength(length)) throw new Error("Invalid NIP-44 padding");
+  return decoder.decode(padded.slice(prefixLength, prefixLength + length));
+}
+
+function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
+  return difference === 0;
+}
+
+async function nip44ConversationKey(secretKeyHex: string, publicKeyHex: string): Promise<Uint8Array> {
+  const secretBytes = hexToBytes(secretKeyHex);
+  const publicBytes = hexToBytes(publicKeyHex);
+  if (secretBytes.length !== 32 || publicBytes.length !== 32) throw new Error("Invalid NIP-44 key");
+  const secret = bytesToBigint(secretBytes);
+  const publicPoint = liftX(bytesToBigint(publicBytes));
+  if (secret <= 0n || secret >= ORDER || !publicPoint) throw new Error("Invalid NIP-44 key");
+  const shared = toAffine(scalarMultiply(secret, publicPoint));
+  return hkdfExtract(bigintToBytes(shared.x), NIP44_SALT);
+}
+
+async function nip44MessageKeys(conversationKey: Uint8Array, nonce: Uint8Array): Promise<{
+  chachaKey: Uint8Array;
+  chachaNonce: Uint8Array;
+  hmacKey: Uint8Array;
+}> {
+  if (conversationKey.length !== 32 || nonce.length !== 32) throw new Error("Invalid NIP-44 key material");
+  const expanded = await hkdfExpand(conversationKey, nonce, 76);
+  return {
+    chachaKey: expanded.slice(0, 32),
+    chachaNonce: expanded.slice(32, 44),
+    hmacKey: expanded.slice(44, 76),
+  };
+}
+
+/** Encrypt a NIP-44 v2 payload. An explicit nonce is accepted only for test vectors. */
+export async function nip44Encrypt(
+  plaintext: string,
+  secretKeyHex: string,
+  recipientPublicKeyHex: string,
+  nonce = globalThis.crypto.getRandomValues(new Uint8Array(32)),
+): Promise<string> {
+  if (nonce.length !== 32) throw new Error("Invalid NIP-44 nonce");
+  const padded = nip44Pad(plaintext);
+  const keys = await nip44MessageKeys(await nip44ConversationKey(secretKeyHex, recipientPublicKeyHex), nonce);
+  const ciphertext = chacha20(keys.chachaKey, keys.chachaNonce, padded);
+  const mac = await hmacSha256(keys.hmacKey, concatBytes(nonce, ciphertext));
+  return base64Encode(concatBytes(Uint8Array.of(NIP44_VERSION), nonce, ciphertext, mac));
+}
+
+/** Authenticate and decrypt a bounded NIP-44 v2 payload. */
+export async function nip44Decrypt(
+  payload: string,
+  secretKeyHex: string,
+  senderPublicKeyHex: string,
+): Promise<string> {
+  if (payload.length < 132 || payload.length > NIP44_MAX_PAYLOAD_CHARS) throw new Error("Invalid NIP-44 payload length");
+  const decoded = base64Decode(payload);
+  if (decoded.length < 99 || decoded[0] !== NIP44_VERSION) throw new Error("Invalid NIP-44 payload");
+  const nonce = decoded.slice(1, 33);
+  const ciphertext = decoded.slice(33, -32);
+  const suppliedMac = decoded.slice(-32);
+  const keys = await nip44MessageKeys(await nip44ConversationKey(secretKeyHex, senderPublicKeyHex), nonce);
+  const expectedMac = await hmacSha256(keys.hmacKey, concatBytes(nonce, ciphertext));
+  if (!constantTimeEqual(suppliedMac, expectedMac)) throw new Error("Invalid NIP-44 authentication code");
+  return nip44Unpad(chacha20(keys.chachaKey, keys.chachaNonce, ciphertext));
 }
 
 export async function sha256(data: Uint8Array | string): Promise<Uint8Array> {
