@@ -467,7 +467,7 @@ export class DemoDayApp {
           <header class="topbar">
             <a class="brand" href="#/" aria-label="Sovereign Engineering Demo Day home">
               <span class="brand-mark">SE</span>
-              <span><strong>Sovereign Engineering</strong><small>Demo Day Tracker</small></span>
+              <span><strong>Sovereign Engineering</strong></span>
             </a>
             <div class="status-cluster" aria-label="Connection status">
               <span class="relay-status ${connected > 0 ? "online" : "offline"}"><i></i>${connected}/${DEFAULT_RELAYS.length} relays</span>
