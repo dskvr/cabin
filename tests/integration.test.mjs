@@ -222,6 +222,23 @@ test("repository retains the latest accepted week when hostile replacements arri
   assert.equal(repository.getWeek(slot)?.event.id, accepted.id);
 });
 
+test("a failed signature check cannot poison a later authentic event with the same ID", async () => {
+  const secret = key(99);
+  const authentic = await buildSessionEvent({
+    sessionD,
+    state: makeState(),
+    secretKeyHex: secret,
+    createdAt: 10,
+  });
+  const forged = { ...authentic, sig: "0".repeat(128) };
+  const repository = new NostrRepository(new InMemoryTestTransport());
+
+  assert.equal(await repository.ingest({ event: forged, relay: "wss://hostile.test" }), false);
+  assert.deepEqual(repository.seenOn(authentic.id), [], "rejected events are not retained as relay sightings");
+  assert.equal(await repository.ingest({ event: authentic, relay: "wss://honest.test" }), true);
+  assert.equal(repository.getEventById(authentic.id)?.sig, authentic.sig);
+});
+
 test("deliberate week publications are singular, monotonic, exact round trips, and retry queued events", async () => {
   const captainSecret = key(100);
   const captainPubkey = getPublicKey(captainSecret);

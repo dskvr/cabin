@@ -59,6 +59,7 @@ function savePending(pending: PendingPublish[]): void {
 
 export class NostrRepository {
   readonly #transport: NostrTransport;
+  readonly #verify: typeof verifyEvent;
   readonly #index = new EventIndex();
   readonly #seenOn = new Map<string, Set<string>>();
   readonly #listeners = new Set<() => void>();
@@ -67,8 +68,9 @@ export class NostrRepository {
   #started = false;
   #pending = loadPending();
 
-  constructor(transport: NostrTransport) {
+  constructor(transport: NostrTransport, verify: typeof verifyEvent = verifyEvent) {
     this.#transport = transport;
+    this.#verify = verify;
   }
 
   get transport(): NostrTransport {
@@ -111,15 +113,19 @@ export class NostrRepository {
   }
 
   async ingest(item: RelayEvent): Promise<boolean> {
+    let validity = this.#validity.get(item.event.id);
+    if (!validity) {
+      validity = this.#verify(item.event);
+      if (!(await validity)) return false;
+      // A verified ID has a verified hash and signature. Negative results are
+      // intentionally not cached: another relay may provide the authentic event.
+      this.#validity.set(item.event.id, Promise.resolve(true));
+    } else if (!(await validity)) {
+      return false;
+    }
     const seen = this.#seenOn.get(item.event.id) ?? new Set<string>();
     seen.add(item.relay);
     this.#seenOn.set(item.event.id, seen);
-    let validity = this.#validity.get(item.event.id);
-    if (!validity) {
-      validity = verifyEvent(item.event);
-      this.#validity.set(item.event.id, validity);
-    }
-    if (!(await validity)) return false;
     const changed = this.#index.ingest(item.event);
     if (changed) this.#notify();
     return changed;
@@ -133,7 +139,7 @@ export class NostrRepository {
     const raw = await this.#transport.query(relays, filter, options);
     const valid: RelayEvent[] = [];
     for (const item of raw) {
-      if (await verifyEvent(item.event)) {
+      if (await this.#verify(item.event)) {
         valid.push(item);
         await this.ingest(item);
       }
